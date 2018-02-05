@@ -8,6 +8,8 @@ use tcod::colors::{self, Color};
 use tcod::map::{Map as FovMap, FovAlgorithm};
 use rand::Rng;
 
+use tcod::input::{self, Event, Mouse};
+
 const PLAYER: usize = 0;
 
 // actual size of the window
@@ -228,6 +230,8 @@ impl Object {
             println!("{} attacks {} but it has no effect!", self.name, target.name);
         }
     }
+
+    // TODO: Implementar método de fusão
 }
 
 fn mut_two<T>(first_index: usize, second_index: usize, items: &mut [T]) -> (&mut T, &mut T) {
@@ -569,6 +573,10 @@ fn render_bar(panel: &mut Offscreen,
 }
 
 fn main() {
+
+    let mut mouse = Default::default();
+    let mut key = Default::default();
+
     let mut root = Root::initializer()
         .font("arial10x10.png", FontLayout::Tcod)
         .font_type(FontType::Greyscale)
