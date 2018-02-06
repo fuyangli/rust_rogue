@@ -2,6 +2,9 @@ extern crate tcod;
 extern crate rand;
 
 use std::cmp;
+use std::thread;
+use std::time;
+
 
 use tcod::console::*;
 use tcod::colors::{self, Color};
@@ -25,11 +28,18 @@ const BAR_WIDTH: i32 = 20;
 const PANEL_HEIGHT: i32 = 7;
 const PANEL_Y: i32 = SCREEN_HEIGHT - PANEL_HEIGHT;
 
+// Mensagens
+const MSG_X: i32 = BAR_WIDTH + 2;
+const MSG_WIDTH: i32 = SCREEN_WIDTH - BAR_WIDTH - 2;
+const MSG_HEIGHT: usize = PANEL_HEIGHT as usize - 1;
+
 //parameters for dungeon generator
 const ROOM_MAX_SIZE: i32 = 10;
 const ROOM_MIN_SIZE: i32 = 6;
 const MAX_ROOMS: i32 = 30;
 const MAX_ROOMS_MONSTERS: i32 = 3;
+
+const MAX_ROOMS_ITEMS: i32 = 3;
 
 const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;  // default FOV algorithm
 const FOV_LIGHT_WALLS: bool = true;  // light walls or not
@@ -43,6 +53,10 @@ const COLOR_DARK_GROUND: Color = Color { r: 50, g: 50, b: 150 };
 const COLOR_LIGHT_GROUND: Color = Color { r: 200, g: 180, b: 50 };
 
 type Map = Vec<Vec<Tile>>;
+type Messages = Vec<(String, Color)>;
+
+
+
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Fighter {
@@ -98,11 +112,12 @@ struct Rect {
     y1: i32,
     x2: i32,
     y2: i32,
+    connections: i32,
 }
 
 impl Rect {
     pub fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
-        Rect { x1: x, y1: y, x2: x + w, y2: y + h }
+        Rect { x1: x, y1: y, x2: x + w, y2: y + h, connections: 0 }
     }
 
     pub fn center(&self) -> (i32, i32) {
@@ -153,13 +168,13 @@ struct Object {
 }
 
 impl Object {
-    pub fn new(x: i32, y: i32, char: char, name: &str, color: Color, blocks: bool) -> Self {
+    pub fn new(x: i32, y: i32, char: char, name: String, color: Color, blocks: bool) -> Self {
         Object {
             x: x,
             y: y,
             char: char,
             color: color,
-            name: name.into(),
+            name: name,
             blocks: blocks,
             alive: false,
             fighter: None,
@@ -231,6 +246,34 @@ impl Object {
         }
     }
 
+    pub fn merge(&mut self, target: &mut Object) -> Object {
+        println!("Target: {:?}", target);
+        let defense = (self.fighter.map_or(0, |f| f.defense) + target.fighter.map_or(0, |f| f.defense)) / 2;
+        let power = (self.fighter.map_or(0, |f| f.power) + target.fighter.map_or(0, |f| f.power)) / 2;
+        let max_hp = (self.fighter.map_or(0, |f| f.max_hp) + target.fighter.map_or(0, |f| f.max_hp)) / 2;
+        let hp = (self.fighter.map_or(0, |f| f.hp) + target.fighter.map_or(0, |f| f.hp)) / 2;
+
+        println!("max_hp: {}", max_hp);
+
+        let c = self.char;
+        let color = self.color + target.color;
+        let name = self.name.clone() + " "  + &target.name;
+
+        let mut object = Object::new(self.x, self.y, c, name, color, self.blocks);
+        object.fighter = Some(Fighter {
+            defense: defense,
+            hp: hp,
+            max_hp: max_hp,
+            power: power,
+            on_death: DeathCallback::Player
+        });
+
+        object.ai = self.ai;
+        object.alive = true;
+        
+        object
+    }
+
     // TODO: Implementar método de fusão
 }
 
@@ -252,7 +295,8 @@ fn ai_take_turn(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &
         if objects[monster_id].distance_to(&objects[PLAYER]) >= 2.0 {
             // move towards player if far away
             let (player_x, player_y) = objects[PLAYER].pos();
-            move_towards(monster_id, player_x, player_y, map, objects);
+            //move_towards(monster_id, player_x, player_y, map, objects);
+            move_away(monster_id, player_x, player_y, map, objects);
         } else if objects[PLAYER].fighter.map_or(false, |f| f.hp > 0) {
             // close enough, attack! (if the player is still alive.)
             let (monster, player) = mut_two(monster_id, PLAYER, objects);
@@ -309,7 +353,7 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
         let x = rand::thread_rng().gen_range(0, MAP_WIDTH - w);
         let y = rand::thread_rng().gen_range(0, MAP_HEIGHT - h);
 
-        let new_room = Rect::new(x, y, w, h);
+        let mut new_room = Rect::new(x, y, w, h);
 
         // run through the other rooms and see if they intersect with this one
         let failed = rooms.iter().any(|other_room| new_room.intersects_with(other_room));
@@ -319,7 +363,7 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
 
             // "paint" it to the map's tiles
             create_room(new_room, &mut map);
-            place_objects(new_room, objects);
+            place_objects(new_room, objects, &mut map);
 
             // center coordinates of the new room, will be useful later
             let (new_x, new_y) = new_room.center();
@@ -332,18 +376,23 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
                 // connect it to the previous room with a tunnel
 
                 // center coordinates of the previous room
-                let (prev_x, prev_y) = rooms[rooms.len() - 1].center();
-
-                // toss a coin (random bool value -- either true or false)
-                if rand::random() {
-                    // first move horizontally, then vertically
-                    create_h_tunnel(prev_x, new_x, prev_y, &mut map);
-                    create_v_tunnel(prev_y, new_y, new_x, &mut map);
-                } else {
-                    // first move vertically, then horizontally
-                    create_v_tunnel(prev_y, new_y, prev_x, &mut map);
-                    create_h_tunnel(prev_x, new_x, new_y, &mut map);
+                let mut previous_room = rooms[rooms.len() - 1];
+                let (prev_x, prev_y) = previous_room.center();
+                if previous_room.connections < 2 && new_room.connections < 2{
+                    // toss a coin (random bool value -- either true or false)
+                    if rand::random() {
+                        // first move horizontally, then vertically
+                        create_h_tunnel(prev_x, new_x, prev_y, &mut map);
+                        create_v_tunnel(prev_y, new_y, new_x, &mut map);
+                    } else {
+                        // first move vertically, then horizontally
+                        create_v_tunnel(prev_y, new_y, prev_x, &mut map);
+                        create_h_tunnel(prev_x, new_x, new_y, &mut map);
+                    }
+                    previous_room.connections += 1;
+                    new_room.connections += 1;
                 }
+                
             }
 
             // finally, append the new room to the list
@@ -355,7 +404,7 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
 }
 
 fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mut Map,
-              fov_map: &mut FovMap, fov_recompute: bool, panel: &mut Offscreen) {
+              fov_map: &mut FovMap, fov_recompute: bool, panel: &mut Offscreen, messages: &Messages, mouse: Mouse) {
     if fov_recompute {
         // recompute FOV if needed (the player moved or something)
         let player = &objects[PLAYER];
@@ -405,13 +454,44 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
     panel.set_default_background(colors::BLACK);
     panel.clear();
 
+    let mut y = MSG_HEIGHT as i32;
+    for &(ref msg, color) in messages.iter().rev() {
+        let msg_height = panel.get_height_rect(MSG_X, y, MSG_WIDTH, 0, msg);
+        y -= msg_height;
+        if y < 0 {
+            break;
+        }
+        panel.set_default_foreground(color);
+        panel.print_rect(MSG_X, y, MSG_WIDTH, 0, msg);
+    }
+
     // show the player's stats
     let hp = objects[PLAYER].fighter.map_or(0, |f| f.hp);
     let max_hp = objects[PLAYER].fighter.map_or(0, |f| f.max_hp);
     render_bar(panel, 1, 1, BAR_WIDTH, "HP", hp, max_hp, colors::LIGHT_RED, colors::DARKER_RED);
 
+    panel.set_default_foreground(colors::LIGHT_GREY);
+    panel.print_ex(1, 0, BackgroundFlag::None, TextAlignment::Left, get_names_under_mouse(mouse, objects, fov_map));
+
     blit(panel, (0, 0), (MAP_WIDTH, PANEL_HEIGHT), root, (0, PANEL_Y), 1.0, 1.0);
 
+    
+
+    
+    
+}
+
+fn move_away(id: usize, target_x: i32, target_y: i32, map: &Map, objects: &mut [Object]) {
+    // vector from this object to the target, and distance
+    let dx = target_x - objects[id].x;
+    let dy = target_y - objects[id].y;
+    let distance = -((dx.pow(2) + dy.pow(2)) as f32).sqrt();
+
+    // normalize it to length 1 (preserving direction), then round it and
+    // convert to integer so the movement is restricted to the map grid
+    let dx = (dx as f32 / distance).round() as i32;
+    let dy = (dy as f32 / distance).round() as i32;
+    move_by(id, dx, dy, map, objects);
 }
 
 fn move_towards(id: usize, target_x: i32, target_y: i32, map: &Map, objects: &mut [Object]) {
@@ -424,10 +504,11 @@ fn move_towards(id: usize, target_x: i32, target_y: i32, map: &Map, objects: &mu
     // convert to integer so the movement is restricted to the map grid
     let dx = (dx as f32 / distance).round() as i32;
     let dy = (dy as f32 / distance).round() as i32;
+
     move_by(id, dx, dy, map, objects);
 }
 
-fn player_move_or_attack(dx: i32, dy: i32, map: &Map, objects: &mut [Object]) {
+fn player_move_or_attack(dx: i32, dy: i32, map: &Map, objects: &mut [Object]) -> Option<Object> {
     // the coordinates the player is moving to/attacking
     let x = objects[PLAYER].x + dx;
     let y = objects[PLAYER].y + dy;
@@ -436,17 +517,19 @@ fn player_move_or_attack(dx: i32, dy: i32, map: &Map, objects: &mut [Object]) {
     let target_id = objects.iter().position(|object| {
         object.fighter.is_some() && object.pos() == (x, y)
     });
-
     // attack if target found, move otherwise
     match target_id {
         Some(target_id) => {
             let (player, target) = mut_two(PLAYER, target_id, objects);
-            player.attack(target);
+            let new_player = player.merge(target);
+            return Some(new_player);
         }
         None => {
             move_by(PLAYER, dx, dy, map, objects);
+            return None;
         }
     }
+    
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -456,12 +539,11 @@ enum PlayerAction {
     Exit,
 }
 
-fn handle_keys(root: &mut Root, map: &Map, objects: &mut [Object]) -> PlayerAction {
+fn handle_keys(key: tcod::input::Key, root: &mut Root, map: &Map, objects: &mut [Object], delta_time_in_nano: u32) -> (PlayerAction, Option<Object>) {
     use tcod::input::Key;
     use tcod::input::KeyCode::*;
     use PlayerAction::*;
 
-    let key = root.wait_for_keypress(true);
     let player_alive = objects[PLAYER].alive;
 
     match (key, player_alive) {
@@ -469,33 +551,46 @@ fn handle_keys(root: &mut Root, map: &Map, objects: &mut [Object]) -> PlayerActi
             // Alt+Enter: toggle fullscreen
             let fullscreen = root.is_fullscreen();
             root.set_fullscreen(!fullscreen);
-            DidntTakeTurn
+            (DidntTakeTurn, None)
         }
-        (Key { code: Escape, .. }, _) => return Exit,  // exit game
+        (Key { code: Escape, .. }, _) => return (Exit, None),  // exit game
 
         // movement keys
         (Key { code: Up, .. }, true) => {
-            player_move_or_attack(0, -1, map, objects);
-            TookTurn
+            let ret = player_move_or_attack(0, -1, map, objects);
+            (TookTurn, ret)
         }
         (Key { code: Down, .. }, true) => {
-            player_move_or_attack(0, 1, map, objects);
-            TookTurn
+            let ret = player_move_or_attack(0, 1, map, objects);
+            (TookTurn, ret)
         }
         (Key { code: Left, .. }, true) => {
-            player_move_or_attack(-1, 0, map, objects);
-            TookTurn
+            let ret = player_move_or_attack(-1, 0, map, objects);
+            (TookTurn, ret)
         }
         (Key { code: Right, .. }, true) => {
-            player_move_or_attack(1, 0, map, objects);
-            TookTurn
+            let ret = player_move_or_attack(1, 0, map, objects);
+            (TookTurn, ret)
         }
 
-        _ => DidntTakeTurn,
+        _ => (DidntTakeTurn, None),
     }
 }
 
-fn place_objects(room: Rect, objects: &mut Vec<Object>) {
+fn get_names_under_mouse(mouse: Mouse, objects: &[Object], fov_map: &FovMap) -> String {
+    let (x, y) = (mouse.cx as i32, mouse.cy as i32);
+
+    // create a list with the names of all objects at the mouse's coordinates and in FOV
+    let names = objects
+        .iter()
+        .filter(|obj| {obj.pos() == (x, y) && fov_map.is_in_fov(obj.x, obj.y)})
+        .map(|obj| obj.name.clone())
+        .collect::<Vec<_>>();
+
+    names.join(", ")  // join the names, separated by commas
+}
+
+fn place_objects(room: Rect, objects: &mut Vec<Object>, map: &Map) {
     // choose random number of monsters
     let num_monsters = rand::thread_rng().gen_range(0, MAX_ROOMS_MONSTERS + 1);
 
@@ -506,7 +601,7 @@ fn place_objects(room: Rect, objects: &mut Vec<Object>) {
 
         let mut monster = if rand::random::<f32>() < 0.8 {  // 80% chance of getting an orc
             // create an orc
-            let mut orc = Object::new(x, y, 'o', "Orc" , colors::DESATURATED_GREEN, true);
+            let mut orc = Object::new(x, y, 'o', "Orc".into() , colors::DESATURATED_GREEN, true);
             orc.fighter = Some(Fighter{
                 max_hp: 10, 
                 hp: 10, 
@@ -517,7 +612,7 @@ fn place_objects(room: Rect, objects: &mut Vec<Object>) {
             orc.ai = Some(Ai);
             orc
         } else {
-            let mut troll = Object::new(x, y, 'T', "Troll" , colors::DARKER_GREEN, true);
+            let mut troll = Object::new(x, y, 'T', "Troll".into() , colors::DARKER_GREEN, true);
             troll.fighter = Some(Fighter {
                 max_hp: 15, 
                 hp: 15, 
@@ -531,6 +626,19 @@ fn place_objects(room: Rect, objects: &mut Vec<Object>) {
         monster.alive = true;
         objects.push(monster);
     }
+
+    // let num_items = rand::thread_rng().gen_range(0, MAX_ROOMS_ITEMS + 1);
+    // for _ in 0..num_items {
+    //     let x = rand::thread_rng().gen_range(room.x1 + 1, room.x2);
+    //     let y = rand::thread_rng().gen_range(room.y1 + 1, room.y2);
+
+    //     // only place it if the tile is not blocked
+    //     if !is_blocked(x, y, map, objects) {
+    //         let mut object = Object::new(x, y, '!', "healing potion", colors::VIOLET, false);
+    //         object.fighter = None;
+    //         objects.push(object);
+    //     }
+    // }
 }
 
 fn is_blocked(x: i32, y: i32, map: &Map, objects: &[Object]) -> bool {
@@ -570,12 +678,27 @@ fn render_bar(panel: &mut Offscreen,
     panel.set_default_foreground(colors::WHITE);
     panel.print_ex(x + total_width / 2, y, BackgroundFlag::None, TextAlignment::Center, 
                &format!("{}: {}/{}", name, value, maximum));
+
+    
+}
+
+fn message<T: Into<String>>(messages: &mut Messages, message: T, color: Color) {
+    // if the buffer is full, remove the first message to make room for the new one
+    if messages.len() == MSG_HEIGHT {
+        messages.remove(0);
+    }
+    // add the new line as a tuple, with the text and the color
+    messages.push((message.into(), color));
+
+    
 }
 
 fn main() {
 
+
     let mut mouse = Default::default();
     let mut key = Default::default();
+
 
     let mut root = Root::initializer()
         .font("arial10x10.png", FontLayout::Tcod)
@@ -588,7 +711,7 @@ fn main() {
 
     let mut panel = Offscreen::new(SCREEN_WIDTH, PANEL_HEIGHT);
 
-    let mut player = Object::new(0, 0, '@', "Player", colors::WHITE, true);
+    let mut player = Object::new(0, 0, '@', "Player".into(), colors::WHITE, true);
     player.alive = true;
     player.fighter = Some(Fighter {
         max_hp: 30,
@@ -603,6 +726,8 @@ fn main() {
 
     let mut map = make_map(&mut objects);
 
+    //let mut inventory = Vec<Object>[];
+
     // create the FOV map, according to the generated map
     let mut fov_map = FovMap::new(MAP_WIDTH, MAP_HEIGHT);
     for y in 0..MAP_HEIGHT {
@@ -616,14 +741,47 @@ fn main() {
     // force FOV "recompute" first time through the game loop
     let mut previous_player_position = (-1, -1);
 
+    let mut messages = vec![];
+
+    message(&mut messages, "Welcome stranger! Prepare to perish in the Tombs of the Ancient Kings.",
+        colors::RED);
+
+    // let t = thread::spawn(move || {
+    //     if objects[PLAYER].alive {
+    //         for id in 0..objects.len() {
+    //             if objects[id].ai.is_some() {
+    //                 ai_take_turn(id, &map, &mut objects, &fov_map);
+    //             }
+    //         }
+    //     }
+    //     thread::sleep(time::Duration::from_secs(1));
+    // });
+    // t.join().unwrap();
+
+    let mut old_time = std::time::SystemTime::now();
+   
     while !root.window_closed() {
+
+        let mut now_time = std::time::SystemTime::now();
+        let delta_time = now_time.duration_since(old_time);
+        old_time = now_time;
+
+        let delta_time_in_nano = delta_time.unwrap().subsec_nanos();
+        
         if let Some(fighter) = objects[PLAYER].fighter {
             root.print_ex(1, SCREEN_HEIGHT - 2, BackgroundFlag::None, TextAlignment::Left,
                         format!("HP: {}/{} ", fighter.hp, fighter.max_hp));
         }
+
+        match input::check_for_event(input::MOUSE | input::KEY_PRESS) {
+            Some((_, Event::Mouse(m))) => mouse = m,
+            Some((_, Event::Key(k))) => key = k,
+            _ => key = Default::default(),
+        }
+
         // render the screen
         let fov_recompute = previous_player_position != (objects[0].x, objects[0].y);
-        render_all(&mut root, &mut con, &objects, &mut map, &mut fov_map, fov_recompute, &mut panel);
+        render_all(&mut root, &mut con, &mut objects, &mut map, &mut fov_map, fov_recompute, &mut panel, &messages, mouse);
 
         root.flush();
 
@@ -634,7 +792,10 @@ fn main() {
 
         // handle keys and exit game if needed
         let player_pos = objects[PLAYER].pos();
-        let player_action = handle_keys(&mut root, &map, &mut objects);
+        let (player_action, option) = handle_keys(key, &mut root, &map, &mut objects, delta_time_in_nano);
+        if(option.is_some()) {
+            objects[PLAYER] = option.unwrap();
+        }
         if player_action == PlayerAction::Exit {
             break
         }
