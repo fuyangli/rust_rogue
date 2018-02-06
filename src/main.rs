@@ -706,7 +706,7 @@ fn main() {
         .size(SCREEN_WIDTH, SCREEN_HEIGHT)
         .title("Rust/libtcod tutorial")
         .init();
-    tcod::system::set_fps(LIMIT_FPS);
+    tcod::system::set_fps(LIMIT_FPS); 
     let mut con = Offscreen::new(MAP_WIDTH, MAP_HEIGHT);
 
     let mut panel = Offscreen::new(SCREEN_WIDTH, PANEL_HEIGHT);
