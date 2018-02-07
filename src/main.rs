@@ -2,9 +2,6 @@ extern crate tcod;
 extern crate rand;
 
 use std::cmp;
-use std::thread;
-use std::time;
-
 
 use tcod::console::*;
 use tcod::colors::{self, Color};
@@ -186,14 +183,6 @@ impl Object {
         }
     }
 
-    /// move by the given amount, if the destination is not blocked
-    pub fn move_by(&mut self, dx: i32, dy: i32, map: &Map) {
-        if !map[(self.x + dx) as usize][(self.y + dy) as usize].blocked {
-            self.x += dx;
-            self.y += dy;
-        }
-    }
-
     /// set the color and then draw the character that represents this object at its position
     pub fn draw(&self, con: &mut Console) {
         con.set_default_foreground(self.color);
@@ -238,15 +227,15 @@ impl Object {
         }
     }
 
-    pub fn attack(&mut self, target: &mut Object) {
+    pub fn attack(&mut self, target: &mut Object, messages: &mut Messages) {
     // a simple formula for attack damage
         let damage = self.fighter.map_or(0, |f| f.power) - target.fighter.map_or(0, |f| f.defense);
         if damage > 0 {
             // make the target take some damage
-            println!("{} attacks {} for {} hit points.", self.name, target.name, damage);
+            message(messages, format!("{} attacks {} for {} hit points.", self.name, target.name, damage), colors::RED);
             target.take_damage(damage);
         } else {
-            println!("{} attacks {} but it has no effect!", self.name, target.name);
+            message(messages, format!("{} attacks {} but it has no effect!", self.name, target.name), colors::RED);
         }
     }
 
@@ -255,8 +244,6 @@ impl Object {
         let power = (((self.fighter.map_or(0, |f| f.power) + target.fighter.map_or(0, |f| f.power)) as f32) * 0.75)  as i32;
         let max_hp = (((self.fighter.map_or(0, |f| f.max_hp) + target.fighter.map_or(0, |f| f.max_hp)) as f32) * 0.75)  as i32; 
         let hp = (((self.fighter.map_or(0, |f| f.hp) + target.fighter.map_or(0, |f| f.hp)) as f32) * 0.75) as i32;
-
-        println!("max_hp: {}", max_hp);
 
         let c = self.char;
         let color = target.color;
@@ -291,19 +278,19 @@ fn mut_two<T>(first_index: usize, second_index: usize, items: &mut [T]) -> (&mut
     }
 }
 
-fn ai_take_turn(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &FovMap) {
+fn ai_take_turn(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &FovMap, messages: &mut Messages) {
     // a basic monster takes its turn. If you can see it, it can see you
     let (monster_x, monster_y) = objects[monster_id].pos();
     if fov_map.is_in_fov(monster_x, monster_y) {
         if objects[monster_id].distance_to(&objects[PLAYER]) >= 2.0 {
             // move towards player if far away
             let (player_x, player_y) = objects[PLAYER].pos();
-            //move_towards(monster_id, player_x, player_y, map, objects);
-            move_away(monster_id, player_x, player_y, map, objects);
+            move_towards(monster_id, player_x, player_y, map, objects);
+            //move_away(monster_id, player_x, player_y, map, objects);
         } else if objects[PLAYER].fighter.map_or(false, |f| f.hp > 0) {
             // close enough, attack! (if the player is still alive.)
             let (monster, player) = mut_two(monster_id, PLAYER, objects);
-            monster.attack(player);
+            monster.attack(player, messages);
         }
     }
 }
@@ -313,18 +300,20 @@ fn move_by(id: usize, dx: i32, dy: i32, map: &Map, objects: &mut [Object]) {
     if !is_blocked(x + dx, y + dy, map, objects) {
         objects[id].set_pos(x + dx, y + dy);
     }
+    else {
+        
+    }
 }
 
 
 
-fn create_room(room: Rect, map: &mut Map, char: char) {
+fn create_room(room: Rect, map: &mut Map) {
     // go through the tiles in the rectangle and make them passable
     for x in (room.x1 + 1)..room.x2 {
         for y in (room.y1 + 1)..room.y2 {
             map[x as usize][y as usize] = Tile::empty();
         }
     }
-    map[room.x2 as usize][room.y2 as usize] = Tile::new(false, false, true, char);
 }
 
 fn create_h_tunnel(x1: i32, x2: i32, y: i32, map: &mut Map) {
@@ -345,7 +334,7 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
 
     let mut rooms = vec![];
 
-    for i in 0..MAX_ROOMS {
+    for _ in 0..MAX_ROOMS {
         // random width and height
         let w = rand::thread_rng().gen_range(ROOM_MIN_SIZE, ROOM_MAX_SIZE + 1);
         let h = rand::thread_rng().gen_range(ROOM_MIN_SIZE, ROOM_MAX_SIZE + 1);
@@ -362,9 +351,9 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
             // this means there are no intersections, so this room is valid
 
             // "paint" it to the map's tiles
-            create_room(new_room, &mut map, (i as u8) as char);
+            create_room(new_room, &mut map);
 
-            place_objects(new_room, objects, &mut map);
+            place_objects(new_room, objects);
 
             // center coordinates of the new room, will be useful later
             let (new_x, new_y) = new_room.center();
@@ -378,23 +367,35 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
             rooms.push(new_room);
         }
     }
+    let (o_x, o_y) = (MAP_HEIGHT / 2, MAP_WIDTH / 2);
     rooms.sort_by(|a, b| {
         let (a_x, a_y) = a.center();
         let (b_x, b_y) = b.center();
-        if a_y < b_y {
-            return std::cmp::Ordering::Less;
+
+        let (dir1_x, dir1_y) = (a_x - o_x, a_y - o_y);
+        let (dir2_x, dir2_y) = (b_x - o_x, b_y - o_y);
+
+        let mut angle1 : f32 = (dir1_x as f32).atan2(dir1_y as f32) * 57.2958;
+        let mut angle2 : f32 = (dir2_x as f32).atan2(dir2_y as f32) * 57.2958;
+
+        if angle1 < 0.0 {
+            angle1 += 360.0;
         }
-        if a_y == b_y {
-            if a_x == b_x {
-                return std::cmp::Ordering::Equal;
-            }
-            if a_x < b_x {
-                return std::cmp::Ordering::Less;
-            }
+        if angle2 < 0.0 {
+            angle2 += 360.0;
         }
-        return std::cmp::Ordering::Greater;
+        
+        if angle1 > angle2 {
+            return std::cmp::Ordering::Greater 
+        }
+        
+        if angle2 > angle1 {
+            return std::cmp::Ordering::Less
+        }
+
+        return std::cmp::Ordering::Equal;
     });
-    println!("{:?}", rooms.len());
+    println!("{:?}", rooms);
 
     for i in 0..rooms.len() {
 
@@ -438,32 +439,26 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
         // go through all tiles, and set their background color
         for y in 0..MAP_HEIGHT {
             for x in 0..MAP_WIDTH {
-                let tile = &mut map[x as usize][y as usize];
                 let visible = fov_map.is_in_fov(x, y);
-                let wall = tile.block_sight;
-                let color = match (visible, wall) {
-                    // outside of field of view:
-                    (false, true) => COLOR_DARK_WALL,
-                    (false, false) => COLOR_DARK_GROUND,
-                    // inside fov:
-                    (true, true) => COLOR_LIGHT_WALL,
-                    (true, false) => COLOR_LIGHT_GROUND,
-                };
-
-                let mut explored = tile.explored;
-                if visible {
-                    // since it's visible, explore it
-                    explored = true;
-                }
-                if explored {
-                    // show explored tiles only (any visible tile is explored already)
-                    con.set_char_background(x, y, color, BackgroundFlag::Set);
-                    if  (tile).char != ' ' {
-                        con.set_default_foreground(colors::WHITE);
-                        con.put_char(x, y, (tile).char, BackgroundFlag::None);
-                    }
-                                            
-                }
+                 let wall = map[x as usize][y as usize].block_sight;
+                 let color = match (visible, wall) {
+                     // outside of field of view:
+                     (false, true) => COLOR_DARK_WALL,
+                     (false, false) => COLOR_DARK_GROUND,
+                     // inside fov:
+                     (true, true) => COLOR_LIGHT_WALL,
+                     (true, false) => COLOR_LIGHT_GROUND,
+                 };
+ 
+                 let explored = &mut map[x as usize][y as usize].explored;
+                 if visible {
+                     // since it's visible, explore it
+                     *explored = true;
+                 }
+                 if *explored {
+                     // show explored tiles only (any visible tile is explored already)
+                     con.set_char_background(x, y, color, BackgroundFlag::Set);
+                 }
             }
         }
 
@@ -539,7 +534,7 @@ fn move_towards(id: usize, target_x: i32, target_y: i32, map: &Map, objects: &mu
     move_by(id, dx, dy, map, objects);
 }
 
-fn player_move_or_attack(dx: i32, dy: i32, map: &Map, objects: &mut [Object]) -> Option<Object> {
+fn player_move_or_attack(dx: i32, dy: i32, map: &Map, objects: &mut [Object], messages: &mut Messages) -> Option<Object> {
     // the coordinates the player is moving to/attacking
     let x = objects[PLAYER].x + dx;
     let y = objects[PLAYER].y + dy;
@@ -552,8 +547,11 @@ fn player_move_or_attack(dx: i32, dy: i32, map: &Map, objects: &mut [Object]) ->
     match target_id {
         Some(target_id) => {
             let (player, target) = mut_two(PLAYER, target_id, objects);
-            let new_player = player.merge(target);
-            return Some(new_player);
+            player.attack(target, messages);
+            return None;
+
+            // let new_player = player.merge(target);
+            // return Some(new_player);
         }
         None => {
             move_by(PLAYER, dx, dy, map, objects);
@@ -570,7 +568,7 @@ enum PlayerAction {
     Exit,
 }
 
-fn handle_keys(key: tcod::input::Key, root: &mut Root, map: &Map, objects: &mut [Object], delta_time_in_nano: u32) -> (PlayerAction, Option<Object>) {
+fn handle_keys(key: tcod::input::Key, root: &mut Root, map: &Map, objects: &mut [Object], messages: &mut Messages) -> (PlayerAction, Option<Object>) {
     use tcod::input::Key;
     use tcod::input::KeyCode::*;
     use PlayerAction::*;
@@ -588,19 +586,19 @@ fn handle_keys(key: tcod::input::Key, root: &mut Root, map: &Map, objects: &mut 
 
         // movement keys
         (Key { code: Up, .. }, true) => {
-            let ret = player_move_or_attack(0, -1, map, objects);
+            let ret = player_move_or_attack(0, -1, map, objects, messages);
             (TookTurn, ret)
         }
         (Key { code: Down, .. }, true) => {
-            let ret = player_move_or_attack(0, 1, map, objects);
+            let ret = player_move_or_attack(0, 1, map, objects, messages);
             (TookTurn, ret)
         }
         (Key { code: Left, .. }, true) => {
-            let ret = player_move_or_attack(-1, 0, map, objects);
+            let ret = player_move_or_attack(-1, 0, map, objects, messages);
             (TookTurn, ret)
         }
         (Key { code: Right, .. }, true) => {
-            let ret = player_move_or_attack(1, 0, map, objects);
+            let ret = player_move_or_attack(1, 0, map, objects, messages);
             (TookTurn, ret)
         }
 
@@ -621,7 +619,7 @@ fn get_names_under_mouse(mouse: Mouse, objects: &[Object], fov_map: &FovMap) -> 
     names.join(", ")  // join the names, separated by commas
 }
 
-fn place_objects(room: Rect, objects: &mut Vec<Object>, map: &Map) {
+fn place_objects(room: Rect, objects: &mut Vec<Object>) {
     // choose random number of monsters
     let num_monsters = rand::thread_rng().gen_range(0, MAX_ROOMS_MONSTERS + 1);
 
@@ -769,9 +767,6 @@ fn main() {
         }
     }
 
-    // force FOV "recompute" first time through the game loop
-    let mut previous_player_position = (-1, -1);
-
     let mut messages = vec![];
 
     message(&mut messages, "Welcome stranger! Prepare to perish in the Tombs of the Ancient Kings.",
@@ -789,16 +784,9 @@ fn main() {
     // });
     // t.join().unwrap();
 
-    let mut old_time = std::time::SystemTime::now();
-   
+ 
     while !root.window_closed() {
-
-        let mut now_time = std::time::SystemTime::now();
-        let delta_time = now_time.duration_since(old_time);
-        old_time = now_time;
-
-        let delta_time_in_nano = delta_time.unwrap().subsec_nanos();
-        
+       
         if let Some(fighter) = objects[PLAYER].fighter {
             root.print_ex(1, SCREEN_HEIGHT - 2, BackgroundFlag::None, TextAlignment::Left,
                         format!("HP: {}/{} ", fighter.hp, fighter.max_hp));
@@ -813,24 +801,22 @@ fn main() {
                 key = k;
                 mouse = Default::default();
             },
-            _ => key = Default::default(),
+            _ => {
+                key = Default::default();
+            },
         }
 
-        // render the screen
-        let fov_recompute = previous_player_position != (objects[0].x, objects[0].y);
-        render_all(&mut root, &mut con, &mut objects, &mut map, &mut fov_map, fov_recompute, &mut panel, &messages, mouse);
+
+        render_all(&mut root, &mut con, &mut objects, &mut map, &mut fov_map, true, &mut panel, &messages, mouse);
 
         root.flush();
 
-        // erase all objects at their old locations, before they move
         for object in &objects {
             object.clear(&mut con)
         }
 
-        // handle keys and exit game if needed
-        let player_pos = objects[PLAYER].pos();
-        let (player_action, option) = handle_keys(key, &mut root, &map, &mut objects, delta_time_in_nano);
-        if(option.is_some()) {
+        let (player_action, option) = handle_keys(key, &mut root, &map, &mut objects, &mut messages);
+        if option.is_some() {
             objects[PLAYER] = option.unwrap();
         }
         if player_action == PlayerAction::Exit {
@@ -840,7 +826,7 @@ fn main() {
         if objects[PLAYER].alive && player_action != PlayerAction::DidntTakeTurn {
             for id in 0..objects.len() {
                 if objects[id].ai.is_some() {
-                    ai_take_turn(id, &map, &mut objects, &fov_map);
+                    ai_take_turn(id, &map, &mut objects, &fov_map, &mut messages)
                 }
             }
         }
