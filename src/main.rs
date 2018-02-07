@@ -34,8 +34,8 @@ const MSG_WIDTH: i32 = SCREEN_WIDTH - BAR_WIDTH - 2;
 const MSG_HEIGHT: usize = PANEL_HEIGHT as usize - 1;
 
 //parameters for dungeon generator
-const ROOM_MAX_SIZE: i32 = 10;
-const ROOM_MIN_SIZE: i32 = 6;
+const ROOM_MAX_SIZE: i32 = 15;
+const ROOM_MIN_SIZE: i32 = 5;
 const MAX_ROOMS: i32 = 30;
 const MAX_ROOMS_MONSTERS: i32 = 3;
 
@@ -93,15 +93,19 @@ struct Tile {
     blocked: bool,
     explored: bool,
     block_sight: bool,
+    char: char
 }
 
 impl Tile {
+    pub fn new(blocked: bool, explored: bool, block_sight: bool, char: char) -> Self {
+        Tile {blocked: blocked, explored: blocked, block_sight: block_sight, char: char}
+    }
     pub fn empty() -> Self {
-        Tile{blocked: false, explored: false, block_sight: false}
+        Tile{blocked: false, explored: false, block_sight: false, char: ' '}
     }
 
     pub fn wall() -> Self {
-        Tile{blocked: true, explored: false, block_sight: true}
+        Tile{blocked: true, explored: false, block_sight: true, char: ' '}
     }
 }
 
@@ -247,16 +251,15 @@ impl Object {
     }
 
     pub fn merge(&mut self, target: &mut Object) -> Object {
-        println!("Target: {:?}", target);
-        let defense = (self.fighter.map_or(0, |f| f.defense) + target.fighter.map_or(0, |f| f.defense)) / 2;
-        let power = (self.fighter.map_or(0, |f| f.power) + target.fighter.map_or(0, |f| f.power)) / 2;
-        let max_hp = (self.fighter.map_or(0, |f| f.max_hp) + target.fighter.map_or(0, |f| f.max_hp)) / 2;
-        let hp = (self.fighter.map_or(0, |f| f.hp) + target.fighter.map_or(0, |f| f.hp)) / 2;
+        let defense = ( ((self.fighter.map_or(0, |f| f.defense) + target.fighter.map_or(0, |f| f.defense)) as f32) * 0.75) as i32;
+        let power = (((self.fighter.map_or(0, |f| f.power) + target.fighter.map_or(0, |f| f.power)) as f32) * 0.75)  as i32;
+        let max_hp = (((self.fighter.map_or(0, |f| f.max_hp) + target.fighter.map_or(0, |f| f.max_hp)) as f32) * 0.75)  as i32; 
+        let hp = (((self.fighter.map_or(0, |f| f.hp) + target.fighter.map_or(0, |f| f.hp)) as f32) * 0.75) as i32;
 
         println!("max_hp: {}", max_hp);
 
         let c = self.char;
-        let color = self.color + target.color;
+        let color = target.color;
         let name = self.name.clone() + " "  + &target.name;
 
         let mut object = Object::new(self.x, self.y, c, name, color, self.blocks);
@@ -314,38 +317,35 @@ fn move_by(id: usize, dx: i32, dy: i32, map: &Map, objects: &mut [Object]) {
 
 
 
-fn create_room(room: Rect, map: &mut Map) {
+fn create_room(room: Rect, map: &mut Map, char: char) {
     // go through the tiles in the rectangle and make them passable
     for x in (room.x1 + 1)..room.x2 {
         for y in (room.y1 + 1)..room.y2 {
             map[x as usize][y as usize] = Tile::empty();
         }
     }
+    map[room.x2 as usize][room.y2 as usize] = Tile::new(false, false, true, char);
 }
 
 fn create_h_tunnel(x1: i32, x2: i32, y: i32, map: &mut Map) {
-    // horizontal tunnel. `min()` and `max()` are used in case `x1 > x2`
     for x in cmp::min(x1, x2)..(cmp::max(x1, x2) + 1) {
         map[x as usize][y as usize] = Tile::empty();
     }
 }
 
 fn create_v_tunnel(y1: i32, y2: i32, x: i32, map: &mut Map) {
-    // vertical tunnel
     for y in cmp::min(y1, y2)..(cmp::max(y1, y2) + 1) {
         map[x as usize][y as usize] = Tile::empty();
     }
 }
 
 fn make_map(objects: &mut Vec<Object>) -> (Map) {
-    // fill map with "blocked" tiles
+
     let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
 
     let mut rooms = vec![];
 
-    let mut starting_position = (0, 0);
-
-    for _ in 0..MAX_ROOMS {
+    for i in 0..MAX_ROOMS {
         // random width and height
         let w = rand::thread_rng().gen_range(ROOM_MIN_SIZE, ROOM_MAX_SIZE + 1);
         let h = rand::thread_rng().gen_range(ROOM_MIN_SIZE, ROOM_MAX_SIZE + 1);
@@ -362,7 +362,8 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
             // this means there are no intersections, so this room is valid
 
             // "paint" it to the map's tiles
-            create_room(new_room, &mut map);
+            create_room(new_room, &mut map, (i as u8) as char);
+
             place_objects(new_room, objects, &mut map);
 
             // center coordinates of the new room, will be useful later
@@ -371,33 +372,57 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
             if rooms.is_empty() {
                 // this is the first room, where the player starts at
                 objects[PLAYER].set_pos(new_x, new_y);
-            } else {
-                // all rooms after the first:
-                // connect it to the previous room with a tunnel
-
-                // center coordinates of the previous room
-                let mut previous_room = rooms[rooms.len() - 1];
-                let (prev_x, prev_y) = previous_room.center();
-                if previous_room.connections < 2 && new_room.connections < 2{
-                    // toss a coin (random bool value -- either true or false)
-                    if rand::random() {
-                        // first move horizontally, then vertically
-                        create_h_tunnel(prev_x, new_x, prev_y, &mut map);
-                        create_v_tunnel(prev_y, new_y, new_x, &mut map);
-                    } else {
-                        // first move vertically, then horizontally
-                        create_v_tunnel(prev_y, new_y, prev_x, &mut map);
-                        create_h_tunnel(prev_x, new_x, new_y, &mut map);
-                    }
-                    previous_room.connections += 1;
-                    new_room.connections += 1;
-                }
-                
-            }
+            } 
 
             // finally, append the new room to the list
             rooms.push(new_room);
         }
+    }
+    rooms.sort_by(|a, b| {
+        let (a_x, a_y) = a.center();
+        let (b_x, b_y) = b.center();
+        if a_y < b_y {
+            return std::cmp::Ordering::Less;
+        }
+        if a_y == b_y {
+            if a_x == b_x {
+                return std::cmp::Ordering::Equal;
+            }
+            if a_x < b_x {
+                return std::cmp::Ordering::Less;
+            }
+        }
+        return std::cmp::Ordering::Greater;
+    });
+    println!("{:?}", rooms.len());
+
+    for i in 0..rooms.len() {
+
+        if i > (rooms.len() - 2) {
+            println!("{:?}", i);
+            continue;
+        }
+        let mut new_room = rooms[i as usize + 1];
+        let (new_x, new_y) = new_room.center();
+        let mut previous_room = rooms[i as usize];
+        let (prev_x, prev_y) = previous_room.center();
+
+        if previous_room.connections < 2 {
+            // toss a coin (random bool value -- either true or false)
+            if rand::random() {
+                // first move horizontally, then vertically
+                create_h_tunnel(prev_x, new_x, prev_y, &mut map);
+                create_v_tunnel(prev_y, new_y, new_x, &mut map);
+            } else {
+                // first move vertically, then horizontally
+                create_v_tunnel(prev_y, new_y, prev_x, &mut map);
+                create_h_tunnel(prev_x, new_x, new_y, &mut map);
+            }
+            previous_room.connections += 1;
+            new_room.connections += 1;
+        }
+        // println!("Previous: {:?}", previous_room);
+        // println!("New: {:?}", new_room);
     }
 
     (map)
@@ -413,8 +438,9 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
         // go through all tiles, and set their background color
         for y in 0..MAP_HEIGHT {
             for x in 0..MAP_WIDTH {
+                let tile = &mut map[x as usize][y as usize];
                 let visible = fov_map.is_in_fov(x, y);
-                let wall = map[x as usize][y as usize].block_sight;
+                let wall = tile.block_sight;
                 let color = match (visible, wall) {
                     // outside of field of view:
                     (false, true) => COLOR_DARK_WALL,
@@ -424,14 +450,19 @@ fn render_all(root: &mut Root, con: &mut Offscreen, objects: &[Object], map: &mu
                     (true, false) => COLOR_LIGHT_GROUND,
                 };
 
-                let explored = &mut map[x as usize][y as usize].explored;
+                let mut explored = tile.explored;
                 if visible {
                     // since it's visible, explore it
-                    *explored = true;
+                    explored = true;
                 }
-                if *explored {
+                if explored {
                     // show explored tiles only (any visible tile is explored already)
                     con.set_char_background(x, y, color, BackgroundFlag::Set);
+                    if  (tile).char != ' ' {
+                        con.set_default_foreground(colors::WHITE);
+                        con.put_char(x, y, (tile).char, BackgroundFlag::None);
+                    }
+                                            
                 }
             }
         }
@@ -774,8 +805,14 @@ fn main() {
         }
 
         match input::check_for_event(input::MOUSE | input::KEY_PRESS) {
-            Some((_, Event::Mouse(m))) => mouse = m,
-            Some((_, Event::Key(k))) => key = k,
+            Some((_, Event::Mouse(m))) => {
+                mouse = m;
+                key = Default::default();
+            },
+            Some((_, Event::Key(k))) => {
+                key = k;
+                mouse = Default::default();
+            },
             _ => key = Default::default(),
         }
 
