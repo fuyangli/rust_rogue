@@ -308,7 +308,7 @@ impl Object {
             on_death: DeathCallback::Player
         });
 
-        object.ai = self.ai.clone();
+        object.ai = self.ai.c;
         object.alive = true;
         
         object

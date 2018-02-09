@@ -59,9 +59,7 @@ type Messages = Vec<(String, Color)>;
 enum ItemType {
     Heal,
     Damage,
-    FireBolt,
-    Confuse,
-    Scare,
+    FireBolt
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -102,7 +100,7 @@ struct Fighter {
     on_death: DeathCallback,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Ai {
     Basic,
     Confused {
@@ -308,7 +306,7 @@ impl Object {
             on_death: DeathCallback::Player
         });
 
-        object.ai = self.ai.clone();
+        object.ai = self.ai;
         object.alive = true;
         
         object
@@ -407,8 +405,8 @@ fn ai_scared(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &Fov
                 let (player_x, player_y) = objects[PLAYER].pos();
                 move_away(monster_id, player_x, player_y, map, objects);
                 //move_away(monster_id, player_x, player_y, map, objects);
-                return Ai::Scared{previous: previous, turns: turns - 1 as u32};
-            }
+                Ai::Scared{previous: previous, turns: turns - 1}
+            } 
         }
     
     }
@@ -417,14 +415,14 @@ fn ai_scared(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &Fov
 
 
 fn ai_confused(monster_id: usize, map: &Map, objects: &mut [Object], messages: &mut Messages,
-               previous: Box<Ai>, turns: u32) -> Ai {
+               previous: Box<Ai>, turns: i32) -> Ai {
     if turns >= 0 { 
         move_by(monster_id,
                 rand::thread_rng().gen_range(-1, 2),
                 rand::thread_rng().gen_range(-1, 2),
                 map,
                 objects);
-        Ai::Confused{previous: previous, turns: turns - 1 as u32}
+        Ai::Confused{previous: previous, turns: turns - 1}
     } else {  // restore the previous AI (this one will be deleted)
         message(messages, format!("The {} is no longer confused!",
                                   objects[monster_id].name),
@@ -811,26 +809,18 @@ fn place_objects(room: Rect, objects: &mut Vec<Object>, map: &Map) {
         // only place it if the tile is not blocked
         if !is_blocked(x, y, map, objects) {
             let dice = rand::random::<f32>();
-            let item = if dice < 0.6 {
+            let item = if dice < 0.7 {
                 let mut object = Object::new(x, y, '!', "Pocao de cura".to_string(), colors::VIOLET, false);
                 object.item = Some(Item::new(ItemType::Heal, 5, 0));
                 object
-            } else if dice < 0.75 {
+            } else if dice < 0.85 {
                 let mut object = Object::new(x, y, 'º', "Bola de Fogo".to_string(), colors::LIGHT_RED, false);
                 object.item = Some(Item::new(ItemType::FireBolt, 20, 5));
                 object
             } else {
-                if rand::random() {
-                    let mut object = Object::new(x, y, '<', "Feitiço de confusao".to_string(), colors::LIGHT_RED, false);
-                    object.item = Some(Item::new(ItemType::Confuse, 0, 5));
-                    object
-                }
-                else {
-                    let mut object = Object::new(x, y, '<', "Feitiço de medo".to_string(), colors::YELLOW, false);
-                    object.item = Some(Item::new(ItemType::Scare, 0, 5));
-                    object
-                }
-               
+                let mut object = Object::new(x, y, 'º', "Feitiço de confusão".to_string(), colors::LIGHT_RED, false);
+                object.item = Some(Item::new(ItemType::FireBolt, 20, 5));
+                object
             };
             
             objects.push(item);
@@ -974,9 +964,7 @@ fn use_item(inventory_id: usize, inventory: &mut Vec<Object>, objects: &mut [Obj
         let on_use = match item.item_type {
             Heal => cast_heal,
             Damage=> cast_damage,
-            FireBolt=> cast_fire_bolt,
-            Confuse=> cast_confuse,
-            Scare => cast_scare
+            FireBolt=> cast_fire_bolt
         };
         match on_use(inventory_id, objects, messages, item, tcod) {
             UseResult::UsedUp => {
@@ -992,15 +980,6 @@ fn use_item(inventory_id: usize, inventory: &mut Vec<Object>, objects: &mut [Obj
                 format!("The {} cannot be used.", inventory[inventory_id].name),
                 colors::WHITE);
     }
-}
-
-fn cast_scare(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> UseResult {
-    unimplemented!()
-}
-
-
-fn cast_confuse(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> UseResult {
-    unimplemented!()
 }
 
 

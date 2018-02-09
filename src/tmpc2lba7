@@ -308,7 +308,7 @@ impl Object {
             on_death: DeathCallback::Player
         });
 
-        object.ai = self.ai.clone();
+        object.ai = self.ai;
         object.alive = true;
         
         object
@@ -995,12 +995,30 @@ fn use_item(inventory_id: usize, inventory: &mut Vec<Object>, objects: &mut [Obj
 }
 
 fn cast_scare(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> UseResult {
-    unimplemented!()
+    print!("Bola de fogo: {:?}", item);
+    let monster_id = closest_monster(item.range as i32, objects, tcod);
+    if let Some(monster_id) = monster_id {
+        message(messages, format!("Uma bola de fogo atingiu o {}!\nO hit foi de {}", objects[monster_id].name, item.amount), colors::BLUE);
+        objects[monster_id].take_damage(item.amount as i32, messages);
+        UseResult::UsedUp
+    }
+    else {
+        UseResult::Cancelled
+    }
 }
 
 
 fn cast_confuse(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> UseResult {
-    unimplemented!()
+    print!("Bola de fogo: {:?}", item);
+    let monster_id = closest_monster(item.range as i32, objects, tcod);
+    if let Some(monster_id) = monster_id {
+        message(messages, format!("Uma bola de fogo atingiu o {}!\nO hit foi de {}", objects[monster_id].name, item.amount), colors::BLUE);
+        objects[monster_id].take_damage(item.amount as i32, messages);
+        UseResult::UsedUp
+    }
+    else {
+        UseResult::Cancelled
+    }
 }
 
 

@@ -308,7 +308,7 @@ impl Object {
             on_death: DeathCallback::Player
         });
 
-        object.ai = self.ai.clone();
+        object.ai = self.ai;
         object.alive = true;
         
         object
@@ -975,8 +975,7 @@ fn use_item(inventory_id: usize, inventory: &mut Vec<Object>, objects: &mut [Obj
             Heal => cast_heal,
             Damage=> cast_damage,
             FireBolt=> cast_fire_bolt,
-            Confuse=> cast_confuse,
-            Scare => cast_scare
+            
         };
         match on_use(inventory_id, objects, messages, item, tcod) {
             UseResult::UsedUp => {
@@ -992,15 +991,6 @@ fn use_item(inventory_id: usize, inventory: &mut Vec<Object>, objects: &mut [Obj
                 format!("The {} cannot be used.", inventory[inventory_id].name),
                 colors::WHITE);
     }
-}
-
-fn cast_scare(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> UseResult {
-    unimplemented!()
-}
-
-
-fn cast_confuse(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> UseResult {
-    unimplemented!()
 }
 
 
