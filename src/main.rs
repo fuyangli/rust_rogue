@@ -1,5 +1,6 @@
 extern crate tcod;
 extern crate rand;
+extern crate bresenham;
 
 use std::cmp;
 
@@ -9,6 +10,7 @@ use tcod::map::{Map as FovMap, FovAlgorithm};
 use rand::Rng;
 use std::ascii::AsciiExt;
 use tcod::input::{self, Event, Mouse};
+use bresenham::Bresenham;
 
 const PLAYER: usize = 0;
 
@@ -17,8 +19,8 @@ const SCREEN_WIDTH: i32 = 80;
 const SCREEN_HEIGHT: i32 = 50;
 
 // size of the map
-const MAP_WIDTH: i32 = 80;
-const MAP_HEIGHT: i32 = 43;
+const MAP_WIDTH: i32 = 80 + SCREEN_WIDTH + 1;
+const MAP_HEIGHT: i32 = 45 + SCREEN_HEIGHT + 1; 
 
 // Panel
 const BAR_WIDTH: i32 = 20;
@@ -33,7 +35,7 @@ const MSG_HEIGHT: usize = PANEL_HEIGHT as usize - 1;
 //parameters for dungeon generator
 const ROOM_MAX_SIZE: i32 = 15;
 const ROOM_MIN_SIZE: i32 = 5;
-const MAX_ROOMS: i32 = 30;
+const MAX_ROOMS: i32 = 60;
 const MAX_ROOMS_MONSTERS: i32 = 3;
 
 const MAX_ROOMS_ITEMS: i32 = 3;
@@ -46,10 +48,10 @@ const TORCH_RADIUS: i32 = 10;
 
 const LIMIT_FPS: i32 = 20;  // 20 frames-per-second maximum
 
-const COLOR_DARK_WALL: Color = Color { r: 0, g: 0, b: 100 };
-const COLOR_LIGHT_WALL: Color = Color { r: 130, g: 110, b: 50 };
-const COLOR_DARK_GROUND: Color = Color { r: 50, g: 50, b: 150 };
-const COLOR_LIGHT_GROUND: Color = Color { r: 200, g: 180, b: 50 };
+const COLOR_DARK_WALL: Color = Color { r: 44, g: 62, b: 80 };
+const COLOR_LIGHT_WALL: Color = Color { r: 52, g: 73, b: 94 };
+const COLOR_DARK_GROUND: Color = Color { r: 153, g:45, b: 34 };
+const COLOR_LIGHT_GROUND: Color = Color { r: 231, g: 76, b: 60 };
 
 type Map = Vec<Vec<Tile>>;
 type Messages = Vec<(String, Color)>;
@@ -107,11 +109,11 @@ enum Ai {
     Basic,
     Confused {
         previous: Box<Ai>,
-        turns: u32
+        turns: i32
     },
     Scared {
         previous: Box<Ai>,
-        turns: u32
+        turns: i32
     }
 }
 
@@ -395,36 +397,30 @@ fn ai_basic(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &FovM
     Ai::Basic
 }
 
-fn ai_scared(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &FovMap, messages: &mut Messages, previous: Box<Ai>, turns: u32) -> Ai {
+fn ai_scared(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &FovMap, messages: &mut Messages, previous: Box<Ai>, turns: i32) -> Ai {
     
     if turns > 0 {
         let (monster_x, monster_y) = objects[monster_id].pos();
-
-
         if fov_map.is_in_fov(monster_x, monster_y) {
-            if objects[monster_id].distance_to(&objects[PLAYER]) >= 2.0 {
-                // move towards player if far away
-                let (player_x, player_y) = objects[PLAYER].pos();
-                move_away(monster_id, player_x, player_y, map, objects);
-                //move_away(monster_id, player_x, player_y, map, objects);
-                return Ai::Scared{previous: previous, turns: turns - 1 as u32};
-            }
+            
+            let (player_x, player_y) = objects[PLAYER].pos();
+            move_away(monster_id, player_x, player_y, map, objects);
+            return Ai::Scared{previous: previous, turns: turns - 1};
         }
-    
     }
     *previous
 }
 
 
 fn ai_confused(monster_id: usize, map: &Map, objects: &mut [Object], messages: &mut Messages,
-               previous: Box<Ai>, turns: u32) -> Ai {
+               previous: Box<Ai>, turns: i32) -> Ai {
     if turns >= 0 { 
         move_by(monster_id,
                 rand::thread_rng().gen_range(-1, 2),
                 rand::thread_rng().gen_range(-1, 2),
                 map,
                 objects);
-        Ai::Confused{previous: previous, turns: turns - 1 as u32}
+        Ai::Confused{previous: previous, turns: turns - 1}
     } else {  // restore the previous AI (this one will be deleted)
         message(messages, format!("The {} is no longer confused!",
                                   objects[monster_id].name),
@@ -458,12 +454,27 @@ fn create_room(room: Rect, map: &mut Map) {
 fn create_h_tunnel(x1: i32, x2: i32, y: i32, map: &mut Map) {
     for x in cmp::min(x1, x2)..(cmp::max(x1, x2) + 1) {
         map[x as usize][y as usize] = Tile::empty();
+        map[(x + 1) as usize][(y + 1) as usize] = Tile::empty();
+        map[(x + 1) as usize][y as usize] = Tile::empty();
+        map[x as usize][(y + 1) as usize] = Tile::empty();
     }
 }
 
 fn create_v_tunnel(y1: i32, y2: i32, x: i32, map: &mut Map) {
     for y in cmp::min(y1, y2)..(cmp::max(y1, y2) + 1) {
         map[x as usize][y as usize] = Tile::empty();
+        map[(x + 1) as usize][(y + 1) as usize] = Tile::empty();
+        map[(x + 1) as usize][y as usize] = Tile::empty();
+        map[x as usize][(y + 1) as usize] = Tile::empty();
+    }
+}
+
+fn create_d_tunnel(y1: i32, y2: i32, x1: i32, x2: i32, map: &mut Map) {
+    for (x,y) in Bresenham::new((x1 as isize, y1 as isize), (x2 as isize, y2 as isize)) {
+        map[x as usize][y as usize] = Tile::empty();
+        map[(x + 1) as usize][(y + 1) as usize] = Tile::empty();
+        map[(x + 1) as usize][y as usize] = Tile::empty();
+        map[x as usize][(y + 1) as usize] = Tile::empty();
     }
 }
 
@@ -506,35 +517,34 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
             rooms.push(new_room);
         }
     }
-    let (o_x, o_y) = (MAP_HEIGHT / 2, MAP_WIDTH / 2);
-    rooms.sort_by(|a, b| {
-        let (a_x, a_y) = a.center();
-        let (b_x, b_y) = b.center();
+    // let (o_x, o_y) = (MAP_HEIGHT / 2, MAP_WIDTH / 2);
+    // rooms.sort_by(|a, b| {
+    //     let (a_x, a_y) = a.center();
+    //     let (b_x, b_y) = b.center();
 
-        let (dir1_x, dir1_y) = (a_x - o_x, a_y - o_y);
-        let (dir2_x, dir2_y) = (b_x - o_x, b_y - o_y);
+    //     let (dir1_x, dir1_y) = (a_x - o_x, a_y - o_y);
+    //     let (dir2_x, dir2_y) = (b_x - o_x, b_y - o_y);
 
-        let mut angle1 : f32 = (dir1_x as f32).atan2(dir1_y as f32) * 57.2958;
-        let mut angle2 : f32 = (dir2_x as f32).atan2(dir2_y as f32) * 57.2958;
+    //     let mut angle1 : f32 = (dir1_x as f32).atan2(dir1_y as f32) * 57.2958;
+    //     let mut angle2 : f32 = (dir2_x as f32).atan2(dir2_y as f32) * 57.2958;
 
-        if angle1 < 0.0 {
-            angle1 += 360.0;
-        }
-        if angle2 < 0.0 {
-            angle2 += 360.0;
-        }
+    //     if angle1 < 0.0 {
+    //         angle1 += 360.0;
+    //     }
+    //     if angle2 < 0.0 {
+    //         angle2 += 360.0;
+    //     }
         
-        if angle1 > angle2 {
-            return std::cmp::Ordering::Greater 
-        }
+    //     if angle1 > angle2 {
+    //         return std::cmp::Ordering::Greater 
+    //     }
         
-        if angle2 > angle1 {
-            return std::cmp::Ordering::Less
-        }
+    //     if angle2 > angle1 {
+    //         return std::cmp::Ordering::Less
+    //     }
 
-        return std::cmp::Ordering::Equal;
-    });
-    println!("{:?}", rooms);
+    //     return std::cmp::Ordering::Equal;
+    // });
 
     for i in 0..rooms.len() {
 
@@ -549,12 +559,14 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
 
         if previous_room.connections < 2 {
             // toss a coin (random bool value -- either true or false)
-            if rand::random() {
-                // first move horizontally, then vertically
+            let chance = rand::random::<f32>();
+            if chance <= 0.5 {
+                create_d_tunnel(prev_y, new_y, prev_x, new_x, &mut map);
+            } else if chance <= 0.6 {
                 create_h_tunnel(prev_x, new_x, prev_y, &mut map);
                 create_v_tunnel(prev_y, new_y, new_x, &mut map);
-            } else {
-                // first move vertically, then horizontally
+            }
+            else {
                 create_v_tunnel(prev_y, new_y, prev_x, &mut map);
                 create_h_tunnel(prev_x, new_x, new_y, &mut map);
             }
@@ -569,7 +581,7 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
 }
 
 fn render_all(tcod: &mut Tcod, objects: &[Object], map: &mut Map,
-              fov_recompute: bool,messages: &Messages) {
+              fov_recompute: bool,messages: &Messages, camera: &mut (i32, i32)) {
     if fov_recompute {
         // recompute FOV if needed (the player moved or something)
         let player = &objects[PLAYER];
@@ -579,17 +591,27 @@ fn render_all(tcod: &mut Tcod, objects: &[Object], map: &mut Map,
         for y in 0..MAP_HEIGHT {
             for x in 0..MAP_WIDTH {
                 let visible = tcod.fov.is_in_fov(x, y);
-                 let wall = map[x as usize][y as usize].block_sight;
-                 let color = match (visible, wall) {
+                let wall = map[x as usize][y as usize].block_sight;
+                let color = match (visible, wall) {
                      // outside of field of view:
                      (false, true) => COLOR_DARK_WALL,
                      (false, false) => COLOR_DARK_GROUND,
                      // inside fov:
-                     (true, true) => COLOR_LIGHT_WALL,
-                     (true, false) => COLOR_LIGHT_GROUND,
+                     (true, true) => colors::lerp(COLOR_LIGHT_WALL, COLOR_DARK_WALL, ((((x - player.x).pow(2) + (y - player.y).pow(2)) as f32).sqrt() / TORCH_RADIUS as f32).powi(2)),
+                     (true, false) => colors::lerp(COLOR_LIGHT_GROUND, COLOR_DARK_GROUND, ((((x - player.x).pow(2) + (y - player.y).pow(2)) as f32).sqrt() / TORCH_RADIUS as f32).powi(2)),
                  };
+                 
  
                  let explored = &mut map[x as usize][y as usize].explored;
+                 if wall && visible {
+                    tcod.con.put_char_ex(x, y, '#',
+                            Color {
+                                r: std::cmp::max(color.r as i16 - 8, 0) as u8,
+                                g: std::cmp::max(color.g as i16 - 8, 0) as u8,
+                                b: std::cmp::max(color.b as i16 - 8, 0) as u8,
+                            }, 
+                            color);
+                 }
                  if visible {
                      // since it's visible, explore it
                      *explored = true;
@@ -613,8 +635,19 @@ fn render_all(tcod: &mut Tcod, objects: &[Object], map: &mut Map,
         }
     }
 
-  
-    blit(&mut tcod.con, (0, 0), (MAP_WIDTH, MAP_HEIGHT), &mut tcod.root, (0, 0), 1.0, 1.0);
+    let vec = {
+        let mut x = camera.0 - (SCREEN_WIDTH / 2);
+        if x < 1 {
+            x = 0;
+        }
+        let mut y = camera.1 - (SCREEN_HEIGHT / 2);
+        if y < 1 {
+            y = 0;
+        }
+        (x, y)
+    };
+    println!("{:?}", vec);
+    blit(&mut tcod.con, vec, (MAP_WIDTH, MAP_HEIGHT), &mut tcod.root, (0, 0), 1.0, 1.0);
 
     tcod.panel.set_default_background(colors::BLACK);
     tcod.panel.clear();
@@ -775,9 +808,13 @@ fn place_objects(room: Rect, objects: &mut Vec<Object>, map: &Map) {
         let x = rand::thread_rng().gen_range(room.x1 + 1, room.x2);
         let y = rand::thread_rng().gen_range(room.y1 + 1, room.y2);
 
-        let mut monster = if rand::random::<f32>() < 0.8 {  // 80% chance of getting an orc
+        let mut monster = if rand::random::<f32>() < 0.8 {  // 80% chance of getting an orcorc
             // create an orc
-            let mut orc = Object::new(x, y, 'o', "Orc".into() , colors::DESATURATED_GREEN, true);
+            let mut orc = Object::new(x, y, 'o', "Orc".into() , colors::Color{
+                r: 46,
+                g: 204,
+                b: 113
+            }, true);
             orc.fighter = Some(Fighter{
                 max_hp: 10, 
                 hp: 10, 
@@ -788,7 +825,11 @@ fn place_objects(room: Rect, objects: &mut Vec<Object>, map: &Map) {
             orc.ai = Some(Ai::Basic);
             orc
         } else {
-            let mut troll = Object::new(x, y, 'T', "Troll".into() , colors::DARKER_GREEN, true);
+            let mut troll = Object::new(x, y, 'T', "Troll".into() , colors::Color {
+                r: 39,
+                g: 174,
+                b: 96
+            }, true);
             troll.fighter = Some(Fighter {
                 max_hp: 15, 
                 hp: 15, 
@@ -812,7 +853,11 @@ fn place_objects(room: Rect, objects: &mut Vec<Object>, map: &Map) {
         if !is_blocked(x, y, map, objects) {
             let dice = rand::random::<f32>();
             let item = if dice < 0.6 {
-                let mut object = Object::new(x, y, '!', "Pocao de cura".to_string(), colors::VIOLET, false);
+                let mut object = Object::new(x, y, '!', "Pocao de cura".to_string(), colors::Color {
+                    r: 142,
+                    g: 68,
+                    b: 173
+                }, false);
                 object.item = Some(Item::new(ItemType::Heal, 5, 0));
                 object
             } else if dice < 0.75 {
@@ -821,12 +866,16 @@ fn place_objects(room: Rect, objects: &mut Vec<Object>, map: &Map) {
                 object
             } else {
                 if rand::random() {
-                    let mut object = Object::new(x, y, '<', "Feitiço de confusao".to_string(), colors::LIGHT_RED, false);
+                    let mut object = Object::new(x, y, '$', "Feitico de confusao".to_string(), colors::Color {
+                        r: 211,
+                        g: 84,
+                        b: 0
+                    }, false);
                     object.item = Some(Item::new(ItemType::Confuse, 0, 5));
                     object
                 }
                 else {
-                    let mut object = Object::new(x, y, '<', "Feitiço de medo".to_string(), colors::YELLOW, false);
+                    let mut object = Object::new(x, y, '*', "Feitico de medo".to_string(), colors::BLACK, false);
                     object.item = Some(Item::new(ItemType::Scare, 0, 5));
                     object
                 }
@@ -973,9 +1022,9 @@ fn use_item(inventory_id: usize, inventory: &mut Vec<Object>, objects: &mut [Obj
     if let Some(item) = object.item {
         let on_use = match item.item_type {
             Heal => cast_heal,
-            Damage=> cast_damage,
-            FireBolt=> cast_fire_bolt,
-            Confuse=> cast_confuse,
+            Damage => cast_damage,
+            FireBolt => cast_fire_bolt,
+            Confuse => cast_confuse,
             Scare => cast_scare
         };
         match on_use(inventory_id, objects, messages, item, tcod) {
@@ -995,12 +1044,46 @@ fn use_item(inventory_id: usize, inventory: &mut Vec<Object>, objects: &mut [Obj
 }
 
 fn cast_scare(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> UseResult {
-    unimplemented!()
+    let monster_id = closest_monster(item.range as i32, objects, tcod);
+    if let Some(monster_id) = monster_id {
+        let old_ai = objects[monster_id].ai.take().unwrap_or(Ai::Basic);
+        // replace the monster's AI with a "confused" one; after
+        // some turns it will restore the old AI
+        objects[monster_id].ai = Some(Ai::Scared {
+            previous: Box::new(old_ai),
+            turns: 5,
+        });
+        message(messages,
+                format!("The eyes of {} look vacant, as he starts to stumble around!",
+                        objects[monster_id].name),
+                colors::LIGHT_GREEN);
+        UseResult::UsedUp
+    } else {  // no enemy fonud within maximum range
+        message(messages, "No enemy is close enough to strike.", colors::RED);
+        UseResult::Cancelled
+    }
 }
 
 
 fn cast_confuse(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> UseResult {
-    unimplemented!()
+    let monster_id = closest_monster(item.range as i32, objects, tcod);
+    if let Some(monster_id) = monster_id {
+        let old_ai = objects[monster_id].ai.take().unwrap_or(Ai::Basic);
+        // replace the monster's AI with a "confused" one; after
+        // some turns it will restore the old AI
+        objects[monster_id].ai = Some(Ai::Confused {
+            previous: Box::new(old_ai),
+            turns: 5,
+        });
+        message(messages,
+                format!("The eyes of {} look vacant, as he starts to stumble around!",
+                        objects[monster_id].name),
+                colors::LIGHT_GREEN);
+        UseResult::UsedUp
+    } else {  // no enemy fonud within maximum range
+        message(messages, "No enemy is close enough to strike.", colors::RED);
+        UseResult::Cancelled
+    }
 }
 
 
@@ -1050,12 +1133,26 @@ fn cast_heal(_inventory_id: usize, objects: &mut [Object], messages: &mut Messag
     UseResult::Cancelled
 }
 
-
+fn handle_camera(camera: &mut (i32, i32), objects: &mut [Object]) {
+    let player = objects[PLAYER].clone();
+    if player.x -camera.0 < -1 {
+        camera.0 -= 1
+    } else if player.x - camera.0 > 0 {
+       camera.0 += 1
+    }
+    if player.y - camera.1 < -1 {
+        camera.1 -= 1
+    } else if player.y - camera.1 > 0 {
+        camera.1 += 1
+    }
+}
 
 fn main() {
 
 
     let mut key = Default::default();
+
+    
 
     let mut root = Root::initializer()
         .font("arial10x10.png", FontLayout::Tcod)
@@ -1083,12 +1180,18 @@ fn main() {
         on_death: DeathCallback::Player
     });
 
+    
+
 
     let mut inventory = vec![];
     // the list of objects with those two
     let mut objects = vec![player];
 
     let mut map = make_map(&mut objects);
+
+    let mut player = objects[PLAYER].clone();
+
+    let mut camera: (i32, i32) = (player.x, player.y);
 
     //let mut inventory = Vec<Object>[];
 
@@ -1139,7 +1242,9 @@ fn main() {
         }
 
 
-        render_all(&mut tcod, &mut objects, &mut map, true, &messages);
+        render_all(&mut tcod, &mut objects, &mut map, true, &messages, &mut camera);
+
+        println!("{:?}", camera);
 
         tcod.root.flush();
 
@@ -1153,6 +1258,8 @@ fn main() {
         }
         if player_action == PlayerAction::Exit {
             break
+        } else if player_action == PlayerAction::TookTurn {
+            handle_camera(&mut camera, &mut objects);
         }
 
         if objects[PLAYER].alive && player_action != PlayerAction::DidntTakeTurn {
