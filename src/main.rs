@@ -122,7 +122,9 @@ struct Tile {
     blocked: bool,
     explored: bool,
     block_sight: bool,
-    char: char
+    char: char,
+    light_color: Color,
+    dark_color: Color
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -169,15 +171,15 @@ impl DeathCallback {
 }
 
 impl Tile {
-    pub fn new(blocked: bool, explored: bool, block_sight: bool, char: char) -> Self {
-        Tile {blocked: blocked, explored: blocked, block_sight: block_sight, char: char}
+    pub fn new(blocked: bool, explored: bool, block_sight: bool, char: char, light_color: Color, dark_color: Color) -> Self {
+        Tile {blocked: blocked, explored: explored, block_sight: block_sight, char: char, light_color: light_color, dark_color: dark_color}
     }
     pub fn empty() -> Self {
-        Tile{blocked: false, explored: false, block_sight: false, char: ' '}
+        Tile{blocked: false, explored: false, block_sight: false, char: ' ', light_color: COLOR_LIGHT_GROUND, dark_color: COLOR_DARK_GROUND }
     }
 
     pub fn wall() -> Self {
-        Tile{blocked: true, explored: false, block_sight: true, char: ' '}
+        Tile{blocked: true, explored: false, block_sight: true, char: ' ', light_color: COLOR_LIGHT_WALL, dark_color: COLOR_DARK_WALL }
     }
 }
 
@@ -440,7 +442,21 @@ fn move_by(id: usize, dx: i32, dy: i32, map: &Map, objects: &mut [Object]) {
     }
 }
 
+fn create_water(room: Rect, map: &mut Map) {
 
+    let w = rand::thread_rng().gen_range(0, (room.x2 - room.x1).abs());
+    let h = rand::thread_rng().gen_range(0, (room.y2 - room.y1).abs());
+    // random position without going out of the boundaries of the map
+    let pos_x = rand::thread_rng().gen_range(room.x1, room.x2 + 1);
+    let pos_z = rand::thread_rng().gen_range(room.y1, room.y2 + 1);
+
+    let water = Rect::new(pos_x, pos_z, w, h);
+    for x in (water.x1 + 1)..water.x2 {
+        for y in (water.y1 + 1)..water.y2 {
+            map[x as usize][y as usize] = Tile::new(false, false, false, '~', colors::BLUE, colors::DARK_BLUE);
+        }
+    }
+}
 
 fn create_room(room: Rect, map: &mut Map) {
     // go through the tiles in the rectangle and make them passable
@@ -494,6 +510,7 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
 
         let mut new_room = Rect::new(x, y, w, h);
 
+
         // run through the other rooms and see if they intersect with this one
         let failed = rooms.iter().any(|other_room| new_room.intersects_with(other_room));
 
@@ -502,6 +519,11 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
 
             // "paint" it to the map's tiles
             create_room(new_room, &mut map);
+
+            if rand::random::<bool>() {
+                create_water(new_room, &mut map);
+            }
+            
 
             place_objects(new_room, objects, &mut map);
 
@@ -517,34 +539,6 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
             rooms.push(new_room);
         }
     }
-    // let (o_x, o_y) = (MAP_HEIGHT / 2, MAP_WIDTH / 2);
-    // rooms.sort_by(|a, b| {
-    //     let (a_x, a_y) = a.center();
-    //     let (b_x, b_y) = b.center();
-
-    //     let (dir1_x, dir1_y) = (a_x - o_x, a_y - o_y);
-    //     let (dir2_x, dir2_y) = (b_x - o_x, b_y - o_y);
-
-    //     let mut angle1 : f32 = (dir1_x as f32).atan2(dir1_y as f32) * 57.2958;
-    //     let mut angle2 : f32 = (dir2_x as f32).atan2(dir2_y as f32) * 57.2958;
-
-    //     if angle1 < 0.0 {
-    //         angle1 += 360.0;
-    //     }
-    //     if angle2 < 0.0 {
-    //         angle2 += 360.0;
-    //     }
-        
-    //     if angle1 > angle2 {
-    //         return std::cmp::Ordering::Greater 
-    //     }
-        
-    //     if angle2 > angle1 {
-    //         return std::cmp::Ordering::Less
-    //     }
-
-    //     return std::cmp::Ordering::Equal;
-    // });
 
     for i in 0..rooms.len() {
 
@@ -591,15 +585,17 @@ fn render_all(tcod: &mut Tcod, objects: &[Object], map: &mut Map,
         for y in 0..MAP_HEIGHT {
             for x in 0..MAP_WIDTH {
                 let visible = tcod.fov.is_in_fov(x, y);
-                let wall = map[x as usize][y as usize].block_sight;
-                let color = match (visible, wall) {
+                let mut tile =  map[x as usize][y as usize];
+                let wall = tile.block_sight;
+                let mut color = match (visible, wall) {
                      // outside of field of view:
-                     (false, true) => COLOR_DARK_WALL,
-                     (false, false) => COLOR_DARK_GROUND,
+                     (false, true) => tile.light_color,
+                     (false, false) => tile.dark_color,
                      // inside fov:
-                     (true, true) => colors::lerp(COLOR_LIGHT_WALL, COLOR_DARK_WALL, ((((x - player.x).pow(2) + (y - player.y).pow(2)) as f32).sqrt() / TORCH_RADIUS as f32).powi(2)),
-                     (true, false) => colors::lerp(COLOR_LIGHT_GROUND, COLOR_DARK_GROUND, ((((x - player.x).pow(2) + (y - player.y).pow(2)) as f32).sqrt() / TORCH_RADIUS as f32).powi(2)),
+                     (true, true) => colors::lerp(tile.light_color, tile.dark_color, ((((x - player.x).pow(2) + (y - player.y).pow(2)) as f32).sqrt() / TORCH_RADIUS as f32).powi(2)),
+                     (true, false) => colors::lerp(tile.light_color, tile.dark_color, ((((x - player.x).pow(2) + (y - player.y).pow(2)) as f32).sqrt() / TORCH_RADIUS as f32).powi(2)),
                  };
+
                  
  
                  let explored = &mut map[x as usize][y as usize].explored;
