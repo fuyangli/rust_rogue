@@ -19,8 +19,8 @@ const SCREEN_WIDTH: i32 = 80;
 const SCREEN_HEIGHT: i32 = 50;
 
 // size of the map
-const MAP_WIDTH: i32 = 80 + SCREEN_WIDTH + 1;
-const MAP_HEIGHT: i32 = 45 + SCREEN_HEIGHT + 1; 
+const MAP_WIDTH: i32 = 800 + SCREEN_WIDTH + 1;
+const MAP_HEIGHT: i32 = 450 + SCREEN_HEIGHT + 1; 
 
 // Panel
 const BAR_WIDTH: i32 = 20;
@@ -33,16 +33,16 @@ const MSG_WIDTH: i32 = SCREEN_WIDTH - BAR_WIDTH - 2;
 const MSG_HEIGHT: usize = PANEL_HEIGHT as usize - 1;
 
 //parameters for dungeon generator
-const ROOM_MAX_SIZE: i32 = 15;
+const ROOM_MAX_SIZE: i32 = 35;
 const ROOM_MIN_SIZE: i32 = 5;
-const MAX_ROOMS: i32 = 60;
+const MAX_ROOMS: i32 = (MAP_HEIGHT + MAP_WIDTH) / 10;
 const MAX_ROOMS_MONSTERS: i32 = 3;
 
 const MAX_ROOMS_ITEMS: i32 = 3;
 
 const INVENTORY_WIDTH: i32 = 50;
 
-const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;  // default FOV algorithm
+const FOV_ALGO: FovAlgorithm = FovAlgorithm::Shadow;  // default FOV algorithm
 const FOV_LIGHT_WALLS: bool = true;  // light walls or not
 const TORCH_RADIUS: i32 = 10;
 
@@ -64,6 +64,7 @@ enum ItemType {
     FireBolt,
     Confuse,
     Scare,
+    Merge
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -136,6 +137,12 @@ struct Rect {
     connections: i32,
 }
 
+struct Circle {
+    radius: i32,
+    x: i32,
+    y: i32
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Item {
     item_type: ItemType,
@@ -179,9 +186,28 @@ impl Tile {
     }
 
     pub fn wall() -> Self {
-        Tile{blocked: true, explored: false, block_sight: true, char: ' ', light_color: COLOR_LIGHT_WALL, dark_color: COLOR_DARK_WALL }
+        Tile{blocked: true, explored: false, block_sight: true, char: '#', light_color: COLOR_LIGHT_WALL, dark_color: COLOR_DARK_WALL }
+    }
+
+    pub fn water() -> Self {
+        Tile::new(false, false, false, '~', colors::BLUE, colors::DARK_BLUE)
     }
 }
+
+
+impl Circle {
+    pub fn new(x: i32, y: i32, radius: i32) -> Self {
+        Circle { x: x, y: y, radius: radius }
+    }
+
+    pub fn center(&self) -> (i32, i32) {
+        let center_x = (self.x + self.radius) / 2;
+        let center_y = (self.y + self.radius) / 2;
+        (center_x, center_y)
+    }
+
+}
+
 
 impl Rect {
     pub fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
@@ -458,6 +484,17 @@ fn create_water(room: Rect, map: &mut Map) {
     }
 }
 
+fn create_circle(circle: Circle, map: &mut Map){
+    for x in (circle.x + 1)..(circle.radius + circle.x + 1) {
+        for y in (circle.y + 1)..(circle.radius + circle.y + 1) {
+            if (x * x) + (y*y) < circle.radius.pow(2) / 2 {
+                println!("Deu");
+                map[x as usize][y as usize] = Tile::water();
+            }
+        }
+    }
+}
+
 fn create_room(room: Rect, map: &mut Map) {
     // go through the tiles in the rectangle and make them passable
     for x in (room.x1 + 1)..room.x2 {
@@ -501,16 +538,18 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
     let mut rooms = vec![];
 
     for _ in 0..MAX_ROOMS {
+        
+
         // random width and height
         let w = rand::thread_rng().gen_range(ROOM_MIN_SIZE, ROOM_MAX_SIZE + 1);
         let h = rand::thread_rng().gen_range(ROOM_MIN_SIZE, ROOM_MAX_SIZE + 1);
+
         // random position without going out of the boundaries of the map
         let x = rand::thread_rng().gen_range(0, MAP_WIDTH - w);
         let y = rand::thread_rng().gen_range(0, MAP_HEIGHT - h);
 
         let mut new_room = Rect::new(x, y, w, h);
-
-
+        
         // run through the other rooms and see if they intersect with this one
         let failed = rooms.iter().any(|other_room| new_room.intersects_with(other_room));
 
@@ -520,9 +559,15 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
             // "paint" it to the map's tiles
             create_room(new_room, &mut map);
 
-            if rand::random::<bool>() {
-                create_water(new_room, &mut map);
-            }
+            
+            
+
+                create_circle( Circle{
+                    x: x,
+                    y: y,
+                    radius: (w + h) /2
+                }, &mut map);
+
             
 
             place_objects(new_room, objects, &mut map);
@@ -542,8 +587,7 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
 
     for i in 0..rooms.len() {
 
-        if i > (rooms.len() - 2) {
-            println!("{:?}", i);
+        if i > (rooms.len() - 3) {
             continue;
         }
         let mut new_room = rooms[i as usize + 1];
@@ -554,9 +598,9 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
         if previous_room.connections < 2 {
             // toss a coin (random bool value -- either true or false)
             let chance = rand::random::<f32>();
-            if chance <= 0.5 {
+            if chance <= 0.33 {
                 create_d_tunnel(prev_y, new_y, prev_x, new_x, &mut map);
-            } else if chance <= 0.6 {
+            } else if chance <= 0.66 {
                 create_h_tunnel(prev_x, new_x, prev_y, &mut map);
                 create_v_tunnel(prev_y, new_y, new_x, &mut map);
             }
@@ -564,6 +608,11 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
                 create_v_tunnel(prev_y, new_y, prev_x, &mut map);
                 create_h_tunnel(prev_x, new_x, new_y, &mut map);
             }
+
+            if rand::random::<bool>() {
+                create_water(new_room, &mut map);
+            }
+
             previous_room.connections += 1;
             new_room.connections += 1;
         }
@@ -576,60 +625,7 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
 
 fn render_all(tcod: &mut Tcod, objects: &[Object], map: &mut Map,
               fov_recompute: bool,messages: &Messages, camera: &mut (i32, i32)) {
-    if fov_recompute {
-        // recompute FOV if needed (the player moved or something)
-        let player = &objects[PLAYER];
-        tcod.fov.compute_fov(player.x, player.y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO);
 
-        // go through all tiles, and set their background color
-        for y in 0..MAP_HEIGHT {
-            for x in 0..MAP_WIDTH {
-                let visible = tcod.fov.is_in_fov(x, y);
-                let mut tile =  map[x as usize][y as usize];
-                let wall = tile.block_sight;
-                let mut color = match (visible, wall) {
-                     // outside of field of view:
-                     (false, true) => tile.light_color,
-                     (false, false) => tile.dark_color,
-                     // inside fov:
-                     (true, true) => colors::lerp(tile.light_color, tile.dark_color, ((((x - player.x).pow(2) + (y - player.y).pow(2)) as f32).sqrt() / TORCH_RADIUS as f32).powi(2)),
-                     (true, false) => colors::lerp(tile.light_color, tile.dark_color, ((((x - player.x).pow(2) + (y - player.y).pow(2)) as f32).sqrt() / TORCH_RADIUS as f32).powi(2)),
-                 };
-
-                 
- 
-                 let explored = &mut map[x as usize][y as usize].explored;
-                 if wall && visible {
-                    tcod.con.put_char_ex(x, y, '#',
-                            Color {
-                                r: std::cmp::max(color.r as i16 - 8, 0) as u8,
-                                g: std::cmp::max(color.g as i16 - 8, 0) as u8,
-                                b: std::cmp::max(color.b as i16 - 8, 0) as u8,
-                            }, 
-                            color);
-                 }
-                 if visible {
-                     // since it's visible, explore it
-                     *explored = true;
-                 }
-                 if *explored {
-                     // show explored tiles only (any visible tile is explored already)
-                     tcod.con.set_char_background(x, y, color, BackgroundFlag::Set);
-                 }
-            }
-        }
-
-    }
-
-    let mut to_draw : Vec<_> = objects.iter().filter(|o| tcod.fov.is_in_fov(o.x, o.y)).collect();
-    to_draw.sort_by(|o1, o2| {
-        o1.blocks.cmp(&o2.blocks)
-    });
-    for object in &to_draw {
-        if tcod.fov.is_in_fov(object.x, object.y) {
-            object.draw(&mut tcod.con);
-        }
-    }
 
     let vec = {
         let mut x = camera.0 - (SCREEN_WIDTH / 2);
@@ -642,34 +638,84 @@ fn render_all(tcod: &mut Tcod, objects: &[Object], map: &mut Map,
         }
         (x, y)
     };
-    println!("{:?}", vec);
-    blit(&mut tcod.con, vec, (MAP_WIDTH, MAP_HEIGHT), &mut tcod.root, (0, 0), 1.0, 1.0);
+    if fov_recompute {
+        // recompute FOV if needed (the player moved or something)
+        let player = &objects[PLAYER];
+        tcod.fov.compute_fov(player.x, player.y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO);
+        for y in 0..MAP_HEIGHT {
+            for x in 0..MAP_WIDTH {
+                let visible = tcod.fov.is_in_fov(x, y);
+                let mut tile =  map[x as usize][y as usize];
+                let wall = tile.block_sight;
+                let mut color = match (visible, wall) {
+                     // outside of field of view:
+                     (false, true) => tile.light_color,
+                     (false, false) => tile.dark_color,
+                     // inside fov:
+                     (true, true) => colors::lerp(tile.light_color, tile.dark_color, ((((x - player.x).pow(2) + (y - player.y).pow(2)) as f32).sqrt() / TORCH_RADIUS as f32).powi(2)),
+                     (true, false) => colors::lerp(tile.light_color, tile.dark_color, ((((x - player.x).pow(2) + (y - player.y).pow(2)) as f32).sqrt() / TORCH_RADIUS as f32).powi(2)),
+                };
 
-    tcod.panel.set_default_background(colors::BLACK);
-    tcod.panel.clear();
-
-    let mut y = MSG_HEIGHT as i32;
-    for &(ref msg, color) in messages.iter().rev() {
-        let msg_height = tcod.panel.get_height_rect(MSG_X, y, MSG_WIDTH, 0, msg);
-        y -= msg_height;
-        if y < 0 {
-            break;
+                let explored = &mut map[x as usize][y as usize].explored;
+                if visible {
+                    // since it's visible, explore it
+                    *explored = true;
+                }
+                if *explored {
+                    // show explored tiles only (any visible tile is explored already)
+                    tcod.con.put_char_ex(x, y, tile.char,
+                        Color {
+                            r: std::cmp::max(color.r as i16 / 2, 0) as u8,
+                            g: std::cmp::max(color.g as i16 / 2, 0) as u8,
+                            b: std::cmp::max(color.b as i16 / 2, 0) as u8,
+                        }, 
+                        color);
+                    tcod.con.set_char_background(x, y, color, BackgroundFlag::Set);
+                }
+            }
         }
-        tcod.panel.set_default_foreground(color);
-        tcod.panel.print_rect(MSG_X, y, MSG_WIDTH, 0, msg);
-    }
-
-    // show the player's stats
-    let hp = objects[PLAYER].fighter.map_or(0, |f| f.hp);
-    let max_hp = objects[PLAYER].fighter.map_or(0, |f| f.max_hp);
-    render_bar(&mut tcod.panel, 1, 1, BAR_WIDTH, "HP", hp, max_hp, colors::LIGHT_RED, colors::DARKER_RED);
-
-    tcod.panel.set_default_foreground(colors::LIGHT_GREY);
-    tcod.panel.print_ex(1, 0, BackgroundFlag::None, TextAlignment::Left, get_names_under_mouse(tcod.mouse, objects, &mut tcod.fov));
-
-    blit(&mut tcod.panel, (0, 0), (MAP_WIDTH, PANEL_HEIGHT), &mut  tcod.root, (0, PANEL_Y), 1.0, 1.0);
 
     
+
+        let mut to_draw : Vec<_> = objects.iter().filter(|o| tcod.fov.is_in_fov(o.x, o.y)).collect();
+        to_draw.sort_by(|o1, o2| {
+            o1.blocks.cmp(&o2.blocks)
+        });
+        for object in &to_draw {
+            if tcod.fov.is_in_fov(object.x, object.y) {
+                object.draw(&mut tcod.con);
+            }
+        }
+
+        
+
+        blit(&mut tcod.con, vec, (MAP_WIDTH, MAP_HEIGHT), &mut tcod.root, (0, 0), 1.0, 1.0);
+
+        tcod.panel.set_default_background(colors::BLACK);
+        tcod.panel.clear();
+
+        let mut y = MSG_HEIGHT as i32;
+        for &(ref msg, color) in messages.iter().rev() {
+            let msg_height = tcod.panel.get_height_rect(MSG_X, y, MSG_WIDTH, 0, msg);
+            y -= msg_height;
+            if y < 0 {
+                break;
+            }
+            tcod.panel.set_default_foreground(color);
+            tcod.panel.print_rect(MSG_X, y, MSG_WIDTH, 0, msg);
+        }
+
+        // show the player's stats
+        let hp = objects[PLAYER].fighter.map_or(0, |f| f.hp);
+        let max_hp = objects[PLAYER].fighter.map_or(0, |f| f.max_hp);
+        render_bar(&mut tcod.panel, 1, 1, BAR_WIDTH, "HP", hp, max_hp, colors::LIGHT_RED, colors::DARKER_RED);
+
+        tcod.panel.set_default_foreground(colors::LIGHT_GREY);
+        tcod.panel.print_ex(1, 0, BackgroundFlag::None, TextAlignment::Left, get_names_under_mouse(tcod.mouse, objects, &mut tcod.fov));
+
+        blit(&mut tcod.panel, (0, 0), (MAP_WIDTH, PANEL_HEIGHT), &mut  tcod.root, (0, PANEL_Y), 1.0, 1.0);
+
+    }
 
     
     
@@ -1021,7 +1067,8 @@ fn use_item(inventory_id: usize, inventory: &mut Vec<Object>, objects: &mut [Obj
             Damage => cast_damage,
             FireBolt => cast_fire_bolt,
             Confuse => cast_confuse,
-            Scare => cast_scare
+            Scare => cast_scare,
+            Merge => cast_merge
         };
         match on_use(inventory_id, objects, messages, item, tcod) {
             UseResult::UsedUp => {
@@ -1050,12 +1097,25 @@ fn cast_scare(_inventory_id: usize, objects: &mut [Object], messages: &mut Messa
             turns: 5,
         });
         message(messages,
-                format!("The eyes of {} look vacant, as he starts to stumble around!",
+                format!("{} tem medo de voce e foge!",
                         objects[monster_id].name),
                 colors::LIGHT_GREEN);
         UseResult::UsedUp
     } else {  // no enemy fonud within maximum range
-        message(messages, "No enemy is close enough to strike.", colors::RED);
+        message(messages, "Nem um inimigo por perto.", colors::RED);
+        UseResult::Cancelled
+    }
+}
+
+fn cast_merge(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> UseResult {
+    let monster_id = closest_monster(item.range as i32, objects, tcod);
+    let mut player = objects[PLAYER].clone();
+    if let Some(monster_id) = monster_id {
+        message(messages, format!("Voce se funde com {}.", objects[monster_id].name), colors::BLUE);
+        player.merge(&mut objects[monster_id]);
+        UseResult::UsedUp
+    }
+    else {
         UseResult::Cancelled
     }
 }
@@ -1063,6 +1123,7 @@ fn cast_scare(_inventory_id: usize, objects: &mut [Object], messages: &mut Messa
 
 fn cast_confuse(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> UseResult {
     let monster_id = closest_monster(item.range as i32, objects, tcod);
+    
     if let Some(monster_id) = monster_id {
         let old_ai = objects[monster_id].ai.take().unwrap_or(Ai::Basic);
         // replace the monster's AI with a "confused" one; after
@@ -1145,17 +1206,14 @@ fn handle_camera(camera: &mut (i32, i32), objects: &mut [Object]) {
 
 fn main() {
 
-
     let mut key = Default::default();
-
-    
-
     let mut root = Root::initializer()
-        .font("arial10x10.png", FontLayout::Tcod)
+        .font("bluebox.png", FontLayout::AsciiInRow)
         .font_type(FontType::Greyscale)
         .size(SCREEN_WIDTH, SCREEN_HEIGHT)
         .title("Rust/libtcod tutorial")
         .init();
+
     tcod::system::set_fps(LIMIT_FPS); 
 
     let mut tcod = Tcod {
@@ -1215,7 +1273,8 @@ fn main() {
     // });
     // t.join().unwrap();
 
- 
+    render_all(&mut tcod, &mut objects, &mut map, true, &messages, &mut camera);
+    
     while !tcod.root.window_closed() {
        
         if let Some(fighter) = objects[PLAYER].fighter {
@@ -1238,11 +1297,7 @@ fn main() {
         }
 
 
-        render_all(&mut tcod, &mut objects, &mut map, true, &messages, &mut camera);
-
-        println!("{:?}", camera);
-
-        tcod.root.flush();
+       
 
         for object in &objects {
             object.clear(&mut tcod.con)
@@ -1265,5 +1320,9 @@ fn main() {
                 }
             }
         }
+
+        render_all(&mut tcod, &mut objects, &mut map, key != Default::default(), &messages, &mut camera);
+
+        tcod.root.flush();
     }
 }
