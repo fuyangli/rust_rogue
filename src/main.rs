@@ -33,7 +33,7 @@ const MSG_WIDTH: i32 = SCREEN_WIDTH - BAR_WIDTH - 2;
 const MSG_HEIGHT: usize = PANEL_HEIGHT as usize - 1;
 
 //parameters for dungeon generator
-const ROOM_MAX_SIZE: i32 = 35;
+const ROOM_MAX_SIZE: i32 = 30;
 const ROOM_MIN_SIZE: i32 = 5;
 const MAX_ROOMS: i32 = (MAP_HEIGHT + MAP_WIDTH) / 10;
 const MAX_ROOMS_MONSTERS: i32 = 3;
@@ -48,10 +48,10 @@ const TORCH_RADIUS: i32 = 10;
 
 const LIMIT_FPS: i32 = 20;  // 20 frames-per-second maximum
 
-const COLOR_DARK_WALL: Color = Color { r: 44, g: 62, b: 80 };
-const COLOR_LIGHT_WALL: Color = Color { r: 52, g: 73, b: 94 };
-const COLOR_DARK_GROUND: Color = Color { r: 153, g:45, b: 34 };
-const COLOR_LIGHT_GROUND: Color = Color { r: 231, g: 76, b: 60 };
+const COLOR_DARK_WALL: Color =      Color { r: 26, g: 37, b: 47 };
+const COLOR_LIGHT_WALL: Color =     Color { r: 44, g: 62, b: 80 };
+const COLOR_DARK_GROUND: Color =    Color { r: 77, g: 23, b: 17 };
+const COLOR_LIGHT_GROUND: Color =   Color { r: 231, g: 76, b: 60 };
 
 type Map = Vec<Vec<Tile>>;
 type Messages = Vec<(String, Color)>;
@@ -162,6 +162,7 @@ struct Object {
     fighter: Option<Fighter>,
     ai: Option<Ai>,
     item: Option<Item>,
+    torch_radius: i32
 }
 
 // IMPLEMENTATIONS
@@ -182,7 +183,11 @@ impl Tile {
         Tile {blocked: blocked, explored: explored, block_sight: block_sight, char: char, light_color: light_color, dark_color: dark_color}
     }
     pub fn empty() -> Self {
-        Tile{blocked: false, explored: false, block_sight: false, char: ' ', light_color: COLOR_LIGHT_GROUND, dark_color: COLOR_DARK_GROUND }
+        Tile{blocked: false, explored: false, block_sight: false, char: '.', light_color: COLOR_LIGHT_GROUND, dark_color: COLOR_DARK_GROUND }
+    }
+
+    pub fn floor(char: char) -> Self {
+        Tile{blocked: false, explored: false, block_sight: false, char: char, light_color: COLOR_LIGHT_GROUND, dark_color: COLOR_DARK_GROUND }
     }
 
     pub fn wall() -> Self {
@@ -250,7 +255,8 @@ impl Object {
             alive: false,
             fighter: None,
             ai: None,
-            item: None
+            item: None,
+            torch_radius: 10
         }
     }
 
@@ -470,13 +476,14 @@ fn move_by(id: usize, dx: i32, dy: i32, map: &Map, objects: &mut [Object]) {
 
 fn create_water(room: Rect, map: &mut Map) {
 
-    let w = rand::thread_rng().gen_range(0, (room.x2 - room.x1).abs());
-    let h = rand::thread_rng().gen_range(0, (room.y2 - room.y1).abs());
+    let w = rand::thread_rng().gen_range(0, (room.x2 - room.x1).abs() / 2) ;
+    let h = rand::thread_rng().gen_range(0, (room.y2 - room.y1).abs() / 2);
     // random position without going out of the boundaries of the map
-    let pos_x = rand::thread_rng().gen_range(room.x1, room.x2 + 1);
-    let pos_z = rand::thread_rng().gen_range(room.y1, room.y2 + 1);
+    let pos_x = rand::thread_rng().gen_range(room.x1 + 1, room.x2 - 1);
+    let pos_z = rand::thread_rng().gen_range(room.y1 + 1, room.y2 - 1);
 
     let water = Rect::new(pos_x, pos_z, w, h);
+    println!("{:?}", water);
     for x in (water.x1 + 1)..water.x2 {
         for y in (water.y1 + 1)..water.y2 {
             map[x as usize][y as usize] = Tile::new(false, false, false, '~', colors::BLUE, colors::DARK_BLUE);
@@ -495,13 +502,27 @@ fn create_circle(circle: Circle, map: &mut Map){
     }
 }
 
-fn create_room(room: Rect, map: &mut Map) {
+fn create_room(room: Rect, objects:  &mut Vec<Object>, map: &mut Map, c: char) {
+    let col_x1 = rand::thread_rng().gen_range(room.x1 + 2, room.x2 - 2);
+    let col_y1 = rand::thread_rng().gen_range(room.y1 + 2, room.y2 - 2);
+
+    let distance_x = col_x1 - room.x2 - 2;
+    let distance_y = col_y1 - room.y2 - 2;
+
+    let col_x2 = col_x1 + rand::thread_rng().gen_range(0, distance_x.max(1));
+    let col_y2 = col_y1 + rand::thread_rng().gen_range(0, distance_y.max(1));
+
+
     // go through the tiles in the rectangle and make them passable
     for x in (room.x1 + 1)..room.x2 {
         for y in (room.y1 + 1)..room.y2 {
-            map[x as usize][y as usize] = Tile::empty();
+            if (x < col_x1 && y < col_y2) || (y > col_y2 && x > col_x2) {
+                map[x as usize][y as usize] = Tile::floor('.');
+            }
         }
     }
+
+    place_objects(room, objects, map);
 }
 
 fn create_h_tunnel(x1: i32, x2: i32, y: i32, map: &mut Map) {
@@ -535,9 +556,9 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
 
     let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
 
-    let mut rooms = vec![];
+    let mut rooms : Vec<Rect> = Vec::new();
 
-    for _ in 0..MAX_ROOMS {
+    for i in 0..MAX_ROOMS {
         
 
         // random width and height
@@ -551,26 +572,18 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
         let mut new_room = Rect::new(x, y, w, h);
         
         // run through the other rooms and see if they intersect with this one
-        let failed = rooms.iter().any(|other_room| new_room.intersects_with(other_room));
+        let failed = false;// rooms.iter().any(|other_room| new_room.intersects_with(other_room));
 
         if !failed {
             // this means there are no intersections, so this room is valid
 
             // "paint" it to the map's tiles
-            create_room(new_room, &mut map);
+            create_room(new_room, objects, &mut map, std::char::from_u32(i as u32).unwrap());
 
+            if rand::random::<bool>() {
+                create_water(new_room, &mut map);
+            }
             
-            
-
-                create_circle( Circle{
-                    x: x,
-                    y: y,
-                    radius: (w + h) /2
-                }, &mut map);
-
-            
-
-            place_objects(new_room, objects, &mut map);
 
             // center coordinates of the new room, will be useful later
             let (new_x, new_y) = new_room.center();
@@ -579,45 +592,28 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
                 // this is the first room, where the player starts at
                 objects[PLAYER].set_pos(new_x, new_y);
             } 
+            else {
+                let (prev_x, prev_y) = rooms.last().unwrap().center();
+
+                let chance = rand::random::<f32>();
+                if chance <= 0.33 {
+                    create_d_tunnel(prev_y, new_y, prev_x, new_x, &mut map);
+                } else if chance <= 0.66 {
+                    create_h_tunnel(prev_x, new_x, prev_y, &mut map);
+                    create_v_tunnel(prev_y, new_y, new_x, &mut map);
+                }
+                else {
+                    create_v_tunnel(prev_y, new_y, prev_x, &mut map);
+                    create_h_tunnel(prev_x, new_x, new_y, &mut map);
+                }
+            }
+
+            
 
             // finally, append the new room to the list
             rooms.push(new_room);
+            rand::thread_rng().shuffle(&mut rooms);
         }
-    }
-
-    for i in 0..rooms.len() {
-
-        if i > (rooms.len() - 3) {
-            continue;
-        }
-        let mut new_room = rooms[i as usize + 1];
-        let (new_x, new_y) = new_room.center();
-        let mut previous_room = rooms[i as usize];
-        let (prev_x, prev_y) = previous_room.center();
-
-        if previous_room.connections < 2 {
-            // toss a coin (random bool value -- either true or false)
-            let chance = rand::random::<f32>();
-            if chance <= 0.33 {
-                create_d_tunnel(prev_y, new_y, prev_x, new_x, &mut map);
-            } else if chance <= 0.66 {
-                create_h_tunnel(prev_x, new_x, prev_y, &mut map);
-                create_v_tunnel(prev_y, new_y, new_x, &mut map);
-            }
-            else {
-                create_v_tunnel(prev_y, new_y, prev_x, &mut map);
-                create_h_tunnel(prev_x, new_x, new_y, &mut map);
-            }
-
-            if rand::random::<bool>() {
-                create_water(new_room, &mut map);
-            }
-
-            previous_room.connections += 1;
-            new_room.connections += 1;
-        }
-        // println!("Previous: {:?}", previous_room);
-        // println!("New: {:?}", new_room);
     }
 
     (map)
@@ -641,19 +637,19 @@ fn render_all(tcod: &mut Tcod, objects: &[Object], map: &mut Map,
     if fov_recompute {
         // recompute FOV if needed (the player moved or something)
         let player = &objects[PLAYER];
-        tcod.fov.compute_fov(player.x, player.y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO);
-        for y in 0..MAP_HEIGHT {
-            for x in 0..MAP_WIDTH {
+        tcod.fov.compute_fov(player.x, player.y, objects[PLAYER].torch_radius, FOV_LIGHT_WALLS, FOV_ALGO);
+        for y in vec.1..vec.1 + SCREEN_HEIGHT {
+            for x in vec.0..vec.0 + SCREEN_WIDTH {
                 let visible = tcod.fov.is_in_fov(x, y);
                 let mut tile =  map[x as usize][y as usize];
                 let wall = tile.block_sight;
                 let mut color = match (visible, wall) {
                      // outside of field of view:
-                     (false, true) => tile.light_color,
+                     (false, true) => tile.dark_color,
                      (false, false) => tile.dark_color,
                      // inside fov:
-                     (true, true) => colors::lerp(tile.light_color, tile.dark_color, ((((x - player.x).pow(2) + (y - player.y).pow(2)) as f32).sqrt() / TORCH_RADIUS as f32).powi(2)),
-                     (true, false) => colors::lerp(tile.light_color, tile.dark_color, ((((x - player.x).pow(2) + (y - player.y).pow(2)) as f32).sqrt() / TORCH_RADIUS as f32).powi(2)),
+                     (true, true) => colors::lerp(tile.light_color, tile.dark_color, ((((x - player.x).pow(2) + (y - player.y).pow(2)) as f32).sqrt() / objects[PLAYER].torch_radius as f32).powi(2)),
+                     (true, false) => colors::lerp(tile.light_color, tile.dark_color, ((((x - player.x).pow(2) + (y - player.y).pow(2)) as f32).sqrt() / objects[PLAYER].torch_radius as f32).powi(2)),
                 };
 
                 let explored = &mut map[x as usize][y as usize].explored;
@@ -662,14 +658,8 @@ fn render_all(tcod: &mut Tcod, objects: &[Object], map: &mut Map,
                     *explored = true;
                 }
                 if *explored {
-                    // show explored tiles only (any visible tile is explored already)
-                    tcod.con.put_char_ex(x, y, tile.char,
-                        Color {
-                            r: std::cmp::max(color.r as i16 / 2, 0) as u8,
-                            g: std::cmp::max(color.g as i16 / 2, 0) as u8,
-                            b: std::cmp::max(color.b as i16 / 2, 0) as u8,
-                        }, 
-                        color);
+                    //show explored tiles only (any visible tile is explored already)
+                    tcod.con.put_char_ex(x, y, tile.char, colors::lerp(color, colors::BLACK, 0.25) ,color);
                     tcod.con.set_char_background(x, y, color, BackgroundFlag::Set);
                 }
             }
@@ -691,33 +681,32 @@ fn render_all(tcod: &mut Tcod, objects: &[Object], map: &mut Map,
 
         blit(&mut tcod.con, vec, (MAP_WIDTH, MAP_HEIGHT), &mut tcod.root, (0, 0), 1.0, 1.0);
 
-        tcod.panel.set_default_background(colors::BLACK);
-        tcod.panel.clear();
-
-        let mut y = MSG_HEIGHT as i32;
-        for &(ref msg, color) in messages.iter().rev() {
-            let msg_height = tcod.panel.get_height_rect(MSG_X, y, MSG_WIDTH, 0, msg);
-            y -= msg_height;
-            if y < 0 {
-                break;
-            }
-            tcod.panel.set_default_foreground(color);
-            tcod.panel.print_rect(MSG_X, y, MSG_WIDTH, 0, msg);
-        }
-
-        // show the player's stats
-        let hp = objects[PLAYER].fighter.map_or(0, |f| f.hp);
-        let max_hp = objects[PLAYER].fighter.map_or(0, |f| f.max_hp);
-        render_bar(&mut tcod.panel, 1, 1, BAR_WIDTH, "HP", hp, max_hp, colors::LIGHT_RED, colors::DARKER_RED);
-
-        tcod.panel.set_default_foreground(colors::LIGHT_GREY);
-        tcod.panel.print_ex(1, 0, BackgroundFlag::None, TextAlignment::Left, get_names_under_mouse(tcod.mouse, objects, &mut tcod.fov));
-
-        blit(&mut tcod.panel, (0, 0), (MAP_WIDTH, PANEL_HEIGHT), &mut  tcod.root, (0, PANEL_Y), 1.0, 1.0);
 
     }
 
-    
+    tcod.panel.set_default_background(colors::BLACK);
+    tcod.panel.clear();
+
+    let mut y = MSG_HEIGHT as i32;
+    for &(ref msg, color) in messages.iter().rev() {
+        let msg_height = tcod.panel.get_height_rect(MSG_X, y, MSG_WIDTH, 0, msg);
+        y -= msg_height;
+        if y < 0 {
+            break;
+        }
+        tcod.panel.set_default_foreground(color);
+        tcod.panel.print_rect(MSG_X, y, MSG_WIDTH, 0, msg);
+    }
+
+    // show the player's stats
+    let hp = objects[PLAYER].fighter.map_or(0, |f| f.hp);
+    let max_hp = objects[PLAYER].fighter.map_or(0, |f| f.max_hp);
+    render_bar(&mut tcod.panel, 1, 1, BAR_WIDTH, "HP", hp, max_hp, colors::LIGHT_RED, colors::DARKER_RED);
+
+    tcod.panel.set_default_foreground(colors::LIGHT_GREY);
+    tcod.panel.print_ex(1, 0, BackgroundFlag::None, TextAlignment::Left, get_names_under_mouse(tcod.mouse, objects, &mut tcod.fov, vec)); //
+
+    blit(&mut tcod.panel, (0, 0), (MAP_WIDTH, PANEL_HEIGHT), &mut  tcod.root, (0, PANEL_Y), 1.0, 1.0);
     
 }
 
@@ -748,14 +737,27 @@ fn move_towards(id: usize, target_x: i32, target_y: i32, map: &Map, objects: &mu
     move_by(id, dx, dy, map, objects);
 }
 
-fn player_move_or_attack(dx: i32, dy: i32, map: &Map, objects: &mut [Object], messages: &mut Messages) -> Option<Object> {
+fn player_move_or_attack(dx: i32, dy: i32, map: &Map, objects: &mut Vec<Object>, messages: &mut Messages, inventory: &mut Vec<Object>) -> Option<Object> {
+    
+    let x = objects[PLAYER].x;
+    let y = objects[PLAYER].y;
+
+    let x2 = x + dx;
+    let y2 = y + dy;
+
+    let item_id = objects.iter().position(|obj| {
+        obj.pos() == (x2, y2) && obj.item.is_some()
+    });
+    if let Some(item_id) = item_id {
+        pick_item_up(item_id, objects, inventory, messages);
+    }
+
     // the coordinates the player is moving to/attacking
-    let x = objects[PLAYER].x + dx;
-    let y = objects[PLAYER].y + dy;
+    
 
     // try to find an attackable object there
     let target_id = objects.iter().position(|object| {
-        object.fighter.is_some() && object.pos() == (x, y)
+        object.fighter.is_some() && object.pos() == (x2, y2)
     });
     // attack if target found, move otherwise
     match target_id {
@@ -775,7 +777,7 @@ fn player_move_or_attack(dx: i32, dy: i32, map: &Map, objects: &mut [Object], me
     
 }
 
-fn handle_keys(key: tcod::input::Key, map: &Map, objects: &mut Vec<Object>, messages: &mut Messages, inventory: &mut Vec<Object>, tcod: &mut Tcod) -> (PlayerAction, Option<Object>) {
+fn handle_keys(key: tcod::input::Key, map: &mut Map, objects: &mut Vec<Object>, messages: &mut Messages, inventory: &mut Vec<Object>, tcod: &mut Tcod) -> (PlayerAction, Option<Object>) {
     use tcod::input::Key;
     use tcod::input::KeyCode::*;
     use PlayerAction::*;
@@ -791,11 +793,12 @@ fn handle_keys(key: tcod::input::Key, map: &Map, objects: &mut Vec<Object>, mess
         }
         (Key { code: Escape, .. }, _) => return (Exit, None),  // exit game
         (Key {printable: 'g', ..}, true) => {
-            let item_id = objects.iter().position(|obj| {
-                obj.pos() == objects[PLAYER].pos() && obj.item.is_some()
-            });
-            if let Some(item_id) = item_id {
-                pick_item_up(item_id, objects, inventory, messages);
+            for y in 0..MAP_HEIGHT {
+                for x in 0..MAP_WIDTH {
+                    let mut tile =  map[x as usize][y as usize];
+                    let explored = &mut map[x as usize][y as usize].explored;
+                    *explored = !(*explored);
+                }
             }
             (DidntTakeTurn, None)
         }, 
@@ -806,21 +809,29 @@ fn handle_keys(key: tcod::input::Key, map: &Map, objects: &mut Vec<Object>, mess
             }
             (TookTurn, None)
         },
+        (Key {printable: '+', ..}, true) => {
+            objects[PLAYER].torch_radius += 1;
+            (DidntTakeTurn, None)
+        },
+        (Key {printable: '-', ..}, true) => {
+            objects[PLAYER].torch_radius -= 1;
+            (DidntTakeTurn, None)
+        },
         // movement keys
         (Key { code: Up, .. }, true) => {
-            let ret = player_move_or_attack(0, -1, map, objects, messages);
+            let ret = player_move_or_attack(0, -1, map, objects, messages, inventory);
             (TookTurn, ret)
         }
         (Key { code: Down, .. }, true) => {
-            let ret = player_move_or_attack(0, 1, map, objects, messages);
+            let ret = player_move_or_attack(0, 1, map, objects, messages, inventory);
             (TookTurn, ret)
         }
         (Key { code: Left, .. }, true) => {
-            let ret = player_move_or_attack(-1, 0, map, objects, messages);
+            let ret = player_move_or_attack(-1, 0, map, objects, messages, inventory);
             (TookTurn, ret)
         }
         (Key { code: Right, .. }, true) => {
-            let ret = player_move_or_attack(1, 0, map, objects, messages);
+            let ret = player_move_or_attack(1, 0, map, objects, messages, inventory);
             (TookTurn, ret)
         }
 
@@ -828,8 +839,8 @@ fn handle_keys(key: tcod::input::Key, map: &Map, objects: &mut Vec<Object>, mess
     }
 }
 
-fn get_names_under_mouse(mouse: Mouse, objects: &[Object], fov_map: &FovMap) -> String {
-    let (x, y) = (mouse.cx as i32, mouse.cy as i32);
+fn get_names_under_mouse(mouse: Mouse, objects: &[Object], fov_map: &FovMap, vec: (i32, i32)) -> String {
+    let (x, y) = (mouse.cx as i32 + vec.0, mouse.cy as i32 + vec.1);
 
     // create a list with the names of all objects at the mouse's coordinates and in FOV
     let names = objects
@@ -837,6 +848,8 @@ fn get_names_under_mouse(mouse: Mouse, objects: &[Object], fov_map: &FovMap) -> 
         .filter(|obj| {obj.pos() == (x, y) && fov_map.is_in_fov(obj.x, obj.y)})
         .map(|obj| obj.name.clone())
         .collect::<Vec<_>>();
+
+    
 
     names.join(", ")  // join the names, separated by commas
 }
@@ -846,11 +859,18 @@ fn place_objects(room: Rect, objects: &mut Vec<Object>, map: &Map) {
     let num_monsters = rand::thread_rng().gen_range(0, MAX_ROOMS_MONSTERS + 1);
 
     for _ in 0..num_monsters {
-        // choose random spot for this monster
-        let x = rand::thread_rng().gen_range(room.x1 + 1, room.x2);
-        let y = rand::thread_rng().gen_range(room.y1 + 1, room.y2);
+        // choose random spot for this 
 
-        let mut monster = if rand::random::<f32>() < 0.8 {  // 80% chance of getting an orcorc
+        let mut x = 0;
+        let mut y = 0;
+        while {
+            x = rand::thread_rng().gen_range(room.x1 + 1, room.x2);
+            y = rand::thread_rng().gen_range(room.y1 + 1, room.y2);
+            
+            is_blocked(x, y, map, objects)
+        } {}
+
+        let mut monster = if rand::random::<f32>() < 0.8 {  // 80% chance of getting an orc
             // create an orc
             let mut orc = Object::new(x, y, 'o', "Orc".into() , colors::Color{
                 r: 46,
@@ -888,48 +908,67 @@ fn place_objects(room: Rect, objects: &mut Vec<Object>, map: &Map) {
 
     let num_items = rand::thread_rng().gen_range(0, MAX_ROOMS_ITEMS + 1);
     for _ in 0..num_items {
-        let x = rand::thread_rng().gen_range(room.x1 + 1, room.x2);
-        let y = rand::thread_rng().gen_range(room.y1 + 1, room.y2);
 
-        // only place it if the tile is not blocked
-        if !is_blocked(x, y, map, objects) {
-            let dice = rand::random::<f32>();
-            let item = if dice < 0.6 {
-                let mut object = Object::new(x, y, '!', "Pocao de cura".to_string(), colors::Color {
-                    r: 142,
-                    g: 68,
-                    b: 173
-                }, false);
-                object.item = Some(Item::new(ItemType::Heal, 5, 0));
-                object
-            } else if dice < 0.75 {
-                let mut object = Object::new(x, y, 'º', "Bola de Fogo".to_string(), colors::LIGHT_RED, false);
-                object.item = Some(Item::new(ItemType::FireBolt, 20, 5));
-                object
-            } else {
-                if rand::random() {
-                    let mut object = Object::new(x, y, '$', "Feitico de confusao".to_string(), colors::Color {
-                        r: 211,
-                        g: 84,
-                        b: 0
-                    }, false);
-                    object.item = Some(Item::new(ItemType::Confuse, 0, 5));
-                    object
-                }
-                else {
-                    let mut object = Object::new(x, y, '*', "Feitico de medo".to_string(), colors::BLACK, false);
-                    object.item = Some(Item::new(ItemType::Scare, 0, 5));
-                    object
-                }
-               
-            };
+        let mut x = rand::thread_rng().gen_range(room.x1 + 1, room.x2);
+        let mut y = rand::thread_rng().gen_range(room.y1 + 1, room.y2);
+
+        while {
             
-            objects.push(item);
-        }
+            x = rand::thread_rng().gen_range(room.x1 + 1, room.x2);
+            y = rand::thread_rng().gen_range(room.y1 + 1, room.y2);
+            
+            is_blocked(x, y, map, objects)
+        } {}
+       
+        let dice = rand::random::<f32>();
+        let item = if dice < 0.4 {
+            let mut object = Object::new(x, y, '!', "Pocao de cura".to_string(), colors::Color {
+                r: 142,
+                g: 68,
+                b: 173
+            }, false);
+            object.item = Some(Item::new(ItemType::Heal, 5, 0));
+            object
+        } else if dice < 0.66 {
+            let mut object = Object::new(x, y, 'º', "Bola de Fogo".to_string(), colors::LIGHT_RED, false);
+            object.item = Some(Item::new(ItemType::FireBolt, 20, 5));
+            object
+        } else if dice < 0.8 {
+            if rand::random() {
+                let mut object = Object::new(x, y, '$', "Feitico de confusao".to_string(), colors::Color {
+                    r: 211,
+                    g: 84,
+                    b: 0
+                }, false);
+                object.item = Some(Item::new(ItemType::Confuse, 0, 5));
+                object
+            }
+            else {
+                let mut object = Object::new(x, y, '*', "Feitico de medo".to_string(), colors::BLACK, false);
+                object.item = Some(Item::new(ItemType::Scare, 0, 5));
+                object
+            }
+            
+        } else {
+            let mut object = Object::new(x, y, 'M', "Feitico de fusao".into(), colors::ORANGE, false);
+            object.item = Some(Item::new(ItemType::Merge, 0, 5));
+            object
+        };
+        
+        objects.push(item);
 
     }
 
 }
+
+fn is_floor(x: i32, y: i32, map: &Map, objects: &[Object]) -> bool {
+
+    // now check for any blocking objects
+    objects.iter().any(|object| {
+        !object.blocks && object.pos() == (x, y)
+    })
+}
+
 
 fn is_blocked(x: i32, y: i32, map: &Map, objects: &[Object]) -> bool {
     // first test the map tile
@@ -1112,7 +1151,9 @@ fn cast_merge(_inventory_id: usize, objects: &mut [Object], messages: &mut Messa
     let mut player = objects[PLAYER].clone();
     if let Some(monster_id) = monster_id {
         message(messages, format!("Voce se funde com {}.", objects[monster_id].name), colors::BLUE);
-        player.merge(&mut objects[monster_id]);
+        objects[PLAYER] = player.merge(&mut objects[monster_id]);
+        let fighter = objects[monster_id].fighter;
+        objects[monster_id].take_damage(fighter.map_or(0, |f| f.max_hp), messages);
         UseResult::UsedUp
     }
     else {
@@ -1211,7 +1252,7 @@ fn main() {
         .font("bluebox.png", FontLayout::AsciiInRow)
         .font_type(FontType::Greyscale)
         .size(SCREEN_WIDTH, SCREEN_HEIGHT)
-        .title("Rust/libtcod tutorial")
+        .title("Rogue")
         .init();
 
     tcod::system::set_fps(LIMIT_FPS); 
@@ -1261,18 +1302,6 @@ fn main() {
 
     message(&mut messages, "Bem vindo!", colors::RED);
 
-    // let t = thread::spawn(move || {
-    //     if objects[PLAYER].alive {
-    //         for id in 0..objects.len() {
-    //             if objects[id].ai.is_some() {
-    //                 ai_take_turn(id, &map, &mut objects, &fov_map);
-    //             } 
-    //         }
-    //     }
-    //     thread::sleep(time::Duration::from_secs(1));
-    // });
-    // t.join().unwrap();
-
     render_all(&mut tcod, &mut objects, &mut map, true, &messages, &mut camera);
     
     while !tcod.root.window_closed() {
@@ -1289,7 +1318,7 @@ fn main() {
             },
             Some((_, Event::Key(k))) => {
                 key = k;
-                tcod.mouse = Default::default();
+                //tcod.mouse = Default::default();
             },
             _ => {
                 key = Default::default();
@@ -1303,7 +1332,7 @@ fn main() {
             object.clear(&mut tcod.con)
         }
 
-        let (player_action, option) = handle_keys(key, &map, &mut objects, &mut messages, &mut inventory, &mut tcod);
+        let (player_action, option) = handle_keys(key, &mut map, &mut objects, &mut messages, &mut inventory, &mut tcod);
         if option.is_some() {
             objects[PLAYER] = option.unwrap();
         }
