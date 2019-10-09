@@ -1,9 +1,10 @@
 extern crate tcod;
 extern crate rand;
 extern crate bresenham;
-extern crate perlin_noise as perlin;
+extern crate noise;
 
 use std::cmp;
+use std::env;
 
 use tcod::console::*;
 use tcod::colors::{self, Color};
@@ -11,7 +12,9 @@ use tcod::map::{Map as FovMap, FovAlgorithm};
 use rand::Rng;
 use tcod::input::{self, Event, Mouse};
 use bresenham::Bresenham;
-use perlin::PerlinNoise;
+use noise::{NoiseModule, Perlin};
+
+mod enums;
 
 
 const PLAYER: usize = 0;
@@ -58,36 +61,6 @@ const COLOR_LIGHT_GROUND: Color =   Color { r: 231, g: 76, b: 60 };
 type Map = Vec<Vec<Tile>>;
 type Messages = Vec<(String, Color)>;
 
-// ENUMS
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum ItemType {
-    Heal,
-    Damage,
-    FireBolt,
-    Confuse,
-    Scare,
-    Merge
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum UseResult {
-    UsedUp,
-    Cancelled,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum PlayerAction {
-    TookTurn,
-    DidntTakeTurn,
-    Exit,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum DeathCallback {
-    Player,
-    Monster,
-}
-
 // STRUCTS
 
 struct Tcod {
@@ -106,21 +79,9 @@ struct Fighter {
     mana: i32,
     defense: i32,
     power: i32,
-    on_death: DeathCallback,
+    on_death: enums::DeathCallback,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-enum Ai {
-    Basic,
-    Confused {
-        previous: Box<Ai>,
-        turns: i32
-    },
-    Scared {
-        previous: Box<Ai>,
-        turns: i32
-    }
-}
 
 #[derive(Clone, Copy, Debug)]
 struct Tile {
@@ -149,7 +110,7 @@ struct Circle {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Item {
-    item_type: ItemType,
+    item_type: enums::ItemType,
     amount: u32,
     range: u32
 }
@@ -164,16 +125,17 @@ struct Object {
     blocks: bool,
     alive: bool,
     fighter: Option<Fighter>,
-    ai: Option<Ai>,
+    ai: Option<enums::Ai>,
     item: Option<Item>,
-    torch_radius: i32
+    torch_radius: i32,
+    always_visible: bool
 }
 
 // IMPLEMENTATIONS
 
-impl DeathCallback {
+impl enums::DeathCallback {
     fn callback(self, object: &mut Object, messages: &mut Messages) {
-        use DeathCallback::*;
+        use enums::DeathCallback::*;
         let callback: fn(&mut Object, &mut Messages) = match self {
             Player => player_death,
             Monster => monster_death,
@@ -237,7 +199,7 @@ impl Rect {
 }
 
 impl Item {
-    pub fn new(item_type: ItemType, amount: u32, range: u32) -> Self {
+    pub fn new(item_type: enums::ItemType, amount: u32, range: u32) -> Self {
         Item {
             item_type: item_type,
             amount: amount,
@@ -260,7 +222,8 @@ impl Object {
             fighter: None,
             ai: None,
             item: None,
-            torch_radius: 10
+            torch_radius: 10,
+            always_visible: false
         }
     }
 
@@ -347,7 +310,7 @@ impl Object {
             hp: hp,
             max_hp: max_hp,
             power: power,
-            on_death: DeathCallback::Player
+            on_death: enums::DeathCallback::Player
         });
 
         object.ai = self.ai.clone();
@@ -406,7 +369,7 @@ fn mut_two<T>(first_index: usize, second_index: usize, items: &mut [T]) -> (&mut
 }
 
 fn ai_take_turn(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &FovMap, messages: &mut Messages) {
-    use Ai::*;
+    use enums::Ai::*;
     if let Some(ai) = objects[monster_id].ai.take() {
         let new_ai = match ai {
             Basic =>                        ai_basic(monster_id, map, objects, fov_map, messages),
@@ -417,7 +380,7 @@ fn ai_take_turn(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &
     }
 }
 
-fn ai_basic(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &FovMap, messages: &mut Messages) -> Ai {
+fn ai_basic(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &FovMap, messages: &mut Messages) -> enums::Ai {
     
     let (monster_x, monster_y) = objects[monster_id].pos();
 
@@ -434,10 +397,10 @@ fn ai_basic(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &FovM
             monster.attack(player, messages);
         }
     }
-    Ai::Basic
+    enums::Ai::Basic
 }
 
-fn ai_scared(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &FovMap, _messages: &mut Messages, previous: Box<Ai>, turns: i32) -> Ai {
+fn ai_scared(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &FovMap, _messages: &mut Messages, previous: Box<enums::Ai>, turns: i32) -> enums::Ai {
     
     if turns > 0 {
         let (monster_x, monster_y) = objects[monster_id].pos();
@@ -445,7 +408,7 @@ fn ai_scared(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &Fov
             
             let (player_x, player_y) = objects[PLAYER].pos();
             move_away(monster_id, player_x, player_y, map, objects);
-            return Ai::Scared{previous: previous, turns: turns - 1};
+            return enums::Ai::Scared{previous: previous, turns: turns - 1};
         }
     }
     *previous
@@ -453,14 +416,14 @@ fn ai_scared(monster_id: usize, map: &Map, objects: &mut [Object], fov_map: &Fov
 
 
 fn ai_confused(monster_id: usize, map: &Map, objects: &mut [Object], messages: &mut Messages,
-               previous: Box<Ai>, turns: i32) -> Ai {
+               previous: Box<enums::Ai>, turns: i32) -> enums::Ai {
     if turns >= 0 { 
         move_by(monster_id,
                 rand::thread_rng().gen_range(-1, 2),
                 rand::thread_rng().gen_range(-1, 2),
                 map,
                 objects);
-        Ai::Confused{previous: previous, turns: turns - 1}
+        enums::Ai::Confused{previous: previous, turns: turns - 1}
     } else {  // restore the previous AI (this one will be deleted)
         message(messages, format!("{} nao esta mais confuso",
                                   objects[monster_id].name),
@@ -558,14 +521,16 @@ fn create_d_tunnel(y1: i32, y2: i32, x1: i32, x2: i32, map: &mut Map) {
 
 fn make_perlin_map(objects: &mut Vec<Object>) -> (Map) {
     let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
-    let perlin = PerlinNoise::new();
-    for i in 0..(MAP_HEIGHT ) {
-        for j in 0..(MAP_WIDTH)  {
-            let x = (j as f64) * 1000000.0 / (MAP_WIDTH as f64);
-            let y = (i as f64) * 1000000.0 / (MAP_HEIGHT as f64);
+    let noise = Perlin::new();
 
-            let n = perlin.get3d([x , y, 10.0]);
-            //println!("x: {} y: {} i: {} j: {} n: {}",x,y, i,j, n);
+    for i in 0..(MAP_HEIGHT) {
+        for j in 0..(MAP_WIDTH)  {
+            let x = (j as f64) / MAP_WIDTH as f64;
+            let y = (i as f64) / MAP_HEIGHT as f64;
+
+            let n = (noise.get([x, y, 0.0]) + 1.0) / 2.0;
+
+            //println!("{}", n);
             if n < 0.35 {
                 map[j as usize][i as usize] = Tile::water()
             }
@@ -612,9 +577,7 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
             // "paint" it to the map's tiles
             create_room(new_room, objects, &mut map, std::char::from_u32(i as u32).unwrap());
 
-            if rand::random::<bool>() {
-                create_water(new_room, &mut map);
-            }
+           
             
 
             // center coordinates of the new room, will be useful later
@@ -628,9 +591,9 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
                 let (prev_x, prev_y) = rooms.last().unwrap().center();
 
                 let chance = rand::random::<f32>();
-                if chance <= 0.33 {
+                if chance <= 0.1 {
                     create_d_tunnel(prev_y, new_y, prev_x, new_x, &mut map);
-                } else if chance <= 0.66 {
+                } else if chance <= 0.50 {
                     create_h_tunnel(prev_x, new_x, prev_y, &mut map);
                     create_v_tunnel(prev_y, new_y, new_x, &mut map);
                 }
@@ -638,15 +601,25 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
                     create_v_tunnel(prev_y, new_y, prev_x, &mut map);
                     create_h_tunnel(prev_x, new_x, new_y, &mut map);
                 }
+
+               
             }
 
-            
+            if rand::random::<bool>() {
+                create_water(new_room, &mut map);
+            }
 
             // finally, append the new room to the list
             rooms.push(new_room);
-            rand::thread_rng().shuffle(&mut rooms);
+            //rand::thread_rng().shuffle(&mut rooms);
         }
     }
+
+    let (last_room_x, last_room_y) = rooms[rooms.len() - 1].center();
+    let mut stairs = Object::new(last_room_x, last_room_y, '<', "stairs".into(), colors::WHITE, false);
+    stairs.always_visible = true;
+    objects.push(stairs);
+
 
     (map)
 }
@@ -673,12 +646,12 @@ fn render_all(tcod: &mut Tcod, objects: &[Object], map: &mut Map,
         for y in (vec.1)..(vec.1 + SCREEN_HEIGHT) {
             for x in (vec.0)..(vec.0 + SCREEN_WIDTH) {
                 
-                let visible = if x <= MAP_WIDTH || y <= MAP_HEIGHT {
-                    tcod.fov.is_in_fov(x, y)
-                } 
-                else {
-                    false
-                };
+                let visible = if x < MAP_WIDTH || y < MAP_HEIGHT {
+                        tcod.fov.is_in_fov(x, y)
+                    } 
+                    else {
+                        false
+                    };
                 let tile =  map[x as usize][y as usize];
                 let wall = tile.block_sight;
                 let color = match (visible, wall) {
@@ -705,7 +678,7 @@ fn render_all(tcod: &mut Tcod, objects: &[Object], map: &mut Map,
 
     
 
-        let mut to_draw : Vec<_> = objects.iter().filter(|o| tcod.fov.is_in_fov(o.x, o.y)).collect();
+        let mut to_draw : Vec<_> = objects.iter().filter(|o| o.always_visible || tcod.fov.is_in_fov(o.x, o.y)).collect();
         to_draw.sort_by(|o1, o2| {
             o1.blocks.cmp(&o2.blocks)
         });
@@ -818,10 +791,10 @@ fn player_move_or_attack(dx: i32, dy: i32, map: &Map, objects: &mut Vec<Object>,
     
 }
 
-fn handle_keys(key: tcod::input::Key, map: &mut Map, objects: &mut Vec<Object>, messages: &mut Messages, inventory: &mut Vec<Object>, tcod: &mut Tcod) -> (PlayerAction, Option<Object>) {
+fn handle_keys(key: tcod::input::Key, map: &mut Map, objects: &mut Vec<Object>, messages: &mut Messages, inventory: &mut Vec<Object>, tcod: &mut Tcod) -> (enums::PlayerAction, Option<Object>) {
     use tcod::input::Key;
     use tcod::input::KeyCode::*;
-    use PlayerAction::*;
+    use enums::PlayerAction::*;
 
     let player_alive = objects[PLAYER].alive;
 
@@ -916,26 +889,22 @@ fn place_objects(room: Rect, objects: &mut Vec<Object>, map: &Map) {
             
             is_blocked(x, y, map, objects)
         } {}
-
-        let mut monster = if rand::random::<f32>() < 0.8 {  // 80% chance of getting an orc
+        let r = rand::random::<f32>();
+        let mut monster = if r < 0.4 { 
             // create an orc
-            let mut orc = Object::new(x, y, 'o', "Orc".into() , colors::Color{
-                r: 46,
-                g: 204,
-                b: 113
-            }, true);
+            let mut orc = Object::new(x, y, 'd', "Duergar".into() , colors::GREY, true);
             orc.fighter = Some(Fighter{
                 mana: 0,
                 max_mana: 0,
                 max_hp: 10, 
                 hp: 10, 
                 defense: 0,
-                power: 3,
-                on_death: DeathCallback::Monster
+                power: 2,
+                on_death: enums::DeathCallback::Monster
             });
-            orc.ai = Some(Ai::Basic);
+            orc.ai = Some(enums::Ai::Basic);
             orc
-        } else {
+        } else if r < 0.6 {
             let mut troll = Object::new(x, y, 'T', "Troll".into() , colors::Color {
                 r: 39,
                 g: 174,
@@ -948,10 +917,23 @@ fn place_objects(room: Rect, objects: &mut Vec<Object>, map: &Map) {
                 hp: 15, 
                 defense: 1, 
                 power: 4,
-                on_death: DeathCallback::Monster
+                on_death: enums::DeathCallback::Monster
             });
-            troll.ai = Some(Ai::Basic);
+            troll.ai = Some(enums::Ai::Basic);
             troll
+        } else {
+            let mut brenda = Object::new(x,y, 'g', "Goblin".into(), colors::GREEN, true);
+            brenda.fighter = Some(Fighter{
+                mana: 0,
+                max_mana: 0,
+                max_hp: 12, 
+                hp: 12, 
+                defense: 1, 
+                power: 3,
+                on_death: enums::DeathCallback::Monster
+            });
+            brenda.ai = Some(enums::Ai::Basic);
+            brenda
         };
         monster.alive = true;
         objects.push(monster);
@@ -978,11 +960,11 @@ fn place_objects(room: Rect, objects: &mut Vec<Object>, map: &Map) {
                 g: 68,
                 b: 173
             }, false);
-            object.item = Some(Item::new(ItemType::Heal, 5, 0));
+            object.item = Some(Item::new(enums::ItemType::Heal, 5, 0));
             object
         } else if dice < 0.66 {
             let mut object = Object::new(x, y, 'º', "Bola de Fogo".to_string(), colors::LIGHT_RED, false);
-            object.item = Some(Item::new(ItemType::FireBolt, 20, 5));
+            object.item = Some(Item::new(enums::ItemType::FireBolt, 20, 5));
             object
         } else if dice < 0.8 {
             if rand::random() {
@@ -991,18 +973,18 @@ fn place_objects(room: Rect, objects: &mut Vec<Object>, map: &Map) {
                     g: 84,
                     b: 0
                 }, false);
-                object.item = Some(Item::new(ItemType::Confuse, 0, 5));
+                object.item = Some(Item::new(enums::ItemType::Confuse, 0, 5));
                 object
             }
             else {
                 let mut object = Object::new(x, y, '*', "Feitico de medo".to_string(), colors::BLACK, false);
-                object.item = Some(Item::new(ItemType::Scare, 0, 5));
+                object.item = Some(Item::new(enums::ItemType::Scare, 0, 5));
                 object
             }
             
         } else {
             let mut object = Object::new(x, y, 'M', "Feitico de fusao".into(), colors::ORANGE, false);
-            object.item = Some(Item::new(ItemType::Merge, 0, 5));
+            object.item = Some(Item::new(enums::ItemType::Merge, 0, 5));
             object
         };
         
@@ -1023,13 +1005,16 @@ fn is_floor(x: i32, y: i32, map: &Map, objects: &[Object]) -> bool {
 
 fn is_blocked(x: i32, y: i32, map: &Map, objects: &[Object]) -> bool {
     // first test the map tile
+
     if map[x as usize][y as usize].blocked {
         return true;
     }
     // now check for any blocking objects
-    objects.iter().any(|object| {
+    let r = objects.iter().any(|object| {
         object.blocks && object.pos() == (x, y)
-    })
+    });
+    return r;
+   
 }
 
 fn render_bar(panel: &mut Offscreen,
@@ -1148,7 +1133,7 @@ fn closest_monster(max_range: i32, objects: &mut [Object], tcod: &Tcod) -> Optio
 
 fn use_item(inventory_id: usize, inventory: &mut Vec<Object>, objects: &mut [Object],
             messages: &mut Messages, tcod: &mut Tcod) {
-    use ItemType::*;
+    use enums::ItemType::*;
     // just call the "use_function" if it is defined
     let object = inventory.iter().nth(inventory_id).expect("Error").clone();
     if let Some(item) = object.item {
@@ -1161,11 +1146,11 @@ fn use_item(inventory_id: usize, inventory: &mut Vec<Object>, objects: &mut [Obj
             Merge => cast_merge
         };
         match on_use(inventory_id, objects, messages, item, tcod) {
-            UseResult::UsedUp => {
+            enums::UseResult::UsedUp => {
                 // destroy after use, unless it was cancelled for some reason
                 inventory.remove(inventory_id);
             }
-            UseResult::Cancelled => {
+            enums::UseResult::Cancelled => {
                 message(messages, "Acao cancelada", colors::WHITE);
             }
         }
@@ -1176,13 +1161,13 @@ fn use_item(inventory_id: usize, inventory: &mut Vec<Object>, objects: &mut [Obj
     }
 }
 
-fn cast_scare(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> UseResult {
+fn cast_scare(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> enums::UseResult {
     let monster_id = closest_monster(item.range as i32, objects, tcod);
     if let Some(monster_id) = monster_id {
-        let old_ai = objects[monster_id].ai.take().unwrap_or(Ai::Basic);
+        let old_ai = objects[monster_id].ai.take().unwrap_or(enums::Ai::Basic);
         // replace the monster's AI with a "confused" one; after
         // some turns it will restore the old AI
-        objects[monster_id].ai = Some(Ai::Scared {
+        objects[monster_id].ai = Some(enums::Ai::Scared {
             previous: Box::new(old_ai),
             turns: 5,
         });
@@ -1190,14 +1175,14 @@ fn cast_scare(_inventory_id: usize, objects: &mut [Object], messages: &mut Messa
                 format!("{} tem medo de voce e foge!",
                         objects[monster_id].name),
                 colors::LIGHT_GREEN);
-        UseResult::UsedUp
+        enums::UseResult::UsedUp
     } else {  // no enemy fonud within maximum range
         message(messages, "Nem um inimigo por perto.", colors::RED);
-        UseResult::Cancelled
+        enums::UseResult::Cancelled
     }
 }
 
-fn cast_merge(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> UseResult {
+fn cast_merge(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> enums::UseResult {
     let monster_id = closest_monster(item.range as i32, objects, tcod);
     let mut player = objects[PLAYER].clone();
     if let Some(monster_id) = monster_id {
@@ -1205,22 +1190,22 @@ fn cast_merge(_inventory_id: usize, objects: &mut [Object], messages: &mut Messa
         objects[PLAYER] = player.merge(&mut objects[monster_id]);
         let fighter = objects[monster_id].fighter;
         objects[monster_id].take_damage(fighter.map_or(0, |f| f.max_hp), messages);
-        UseResult::UsedUp
+        enums::UseResult::UsedUp
     }
     else {
-        UseResult::Cancelled
+        enums::UseResult::Cancelled
     }
 }
 
 
-fn cast_confuse(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> UseResult {
+fn cast_confuse(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> enums::UseResult {
     let monster_id = closest_monster(item.range as i32, objects, tcod);
     
     if let Some(monster_id) = monster_id {
-        let old_ai = objects[monster_id].ai.take().unwrap_or(Ai::Basic);
+        let old_ai = objects[monster_id].ai.take().unwrap_or(enums::Ai::Basic);
         // replace the monster's AI with a "confused" one; after
         // some turns it will restore the old AI
-        objects[monster_id].ai = Some(Ai::Confused {
+        objects[monster_id].ai = Some(enums::Ai::Confused {
             previous: Box::new(old_ai),
             turns: 5,
         });
@@ -1228,57 +1213,57 @@ fn cast_confuse(_inventory_id: usize, objects: &mut [Object], messages: &mut Mes
                 format!("{} esta confuso!",
                         objects[monster_id].name),
                 colors::LIGHT_GREEN);
-        UseResult::UsedUp
+        enums::UseResult::UsedUp
     } else {  // no enemy fonud within maximum range
         message(messages, "Nenhum inimigo por perto.", colors::RED);
-        UseResult::Cancelled
+        enums::UseResult::Cancelled
     }
 }
 
 
-fn cast_fire_bolt(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> UseResult {
+fn cast_fire_bolt(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages, item: Item, tcod: &mut Tcod) -> enums::UseResult {
     let monster_id = closest_monster(item.range as i32, objects, tcod);
     if let Some(monster_id) = monster_id {
         message(messages, format!("Uma bola de fogo atingiu o {}!\nO hit foi de {}", objects[monster_id].name, item.amount), colors::BLUE);
         objects[monster_id].take_damage(item.amount as i32, messages);
-        UseResult::UsedUp
+        enums::UseResult::UsedUp
     }
     else {
-        UseResult::Cancelled
+        enums::UseResult::Cancelled
     }
 }
 
 
-fn cast_damage(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages,  item: Item, _tcod: &mut Tcod) -> UseResult {
+fn cast_damage(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages,  item: Item, _tcod: &mut Tcod) -> enums::UseResult {
     // heal the player
     if let Some(fighter) = objects[PLAYER].fighter {
         
         if fighter.hp < 1 {
             message(messages, "Voce ja esta morto", colors::RED);
-            return UseResult::Cancelled;
+            return enums::UseResult::Cancelled;
         }
         message(messages, "Voce foi ferido!", colors::LIGHT_VIOLET);
         objects[PLAYER].take_damage(item.amount as i32, messages);
-        return UseResult::UsedUp;
+        return enums::UseResult::UsedUp;
         
     }
-    UseResult::Cancelled
+   enums::UseResult::Cancelled
 }
 
-fn cast_heal(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages,  item: Item, _tcod: &mut Tcod) -> UseResult {
+fn cast_heal(_inventory_id: usize, objects: &mut [Object], messages: &mut Messages,  item: Item, _tcod: &mut Tcod) -> enums::UseResult {
     // heal the player
     if let Some(fighter) = objects[PLAYER].fighter {
         
         if fighter.hp == fighter.max_hp {
             message(messages, "Voce ja tem a vida cheia.", colors::RED);
-            return UseResult::Cancelled;
+            return enums::UseResult::Cancelled;
         }
         message(messages, "Voce se sente melhor!", colors::LIGHT_VIOLET);
         objects[PLAYER].heal(item.amount as i32);
-        return UseResult::UsedUp;
+        return enums::UseResult::UsedUp;
         
     }
-    UseResult::Cancelled
+    enums::UseResult::Cancelled
 }
 
 fn handle_camera(camera: &mut (i32, i32), objects: &mut [Object]) {
@@ -1297,7 +1282,23 @@ fn handle_camera(camera: &mut (i32, i32), objects: &mut [Object]) {
 
 fn main() {
 
-   
+    
+    // let args : Vec<String> = env::args().collect();
+    // println!("{:?}", &args[1..]);
+
+    // let aux = &args[1];
+    // let a : f64 = aux.parse().unwrap();
+    
+    // let perlin = Perlin::new();
+
+    // utils::math::map_range(a, 0.0, MAP_WIDTH, 0.0, 1.0)
+
+    // let n = perlin.get([a, 0.0, 0.0]);
+
+    // println!("{}", n);
+
+    // return;
+
     let root = Root::initializer()
         .font("bluebox.png", FontLayout::AsciiInRow)
         .font_type(FontType::Greyscale)
@@ -1324,7 +1325,7 @@ fn main() {
         hp: 30, 
         defense: 2,
         power: 5,
-        on_death: DeathCallback::Player
+        on_death: enums::DeathCallback::Player
     });
 
     
@@ -1387,13 +1388,13 @@ fn main() {
         if option.is_some() {
             objects[PLAYER] = option.unwrap();
         }
-        if player_action == PlayerAction::Exit {
+        if player_action == enums::PlayerAction::Exit {
             break
-        } else if player_action == PlayerAction::TookTurn {
+        } else if player_action == enums::PlayerAction::TookTurn {
             handle_camera(&mut camera, &mut objects);
         }
 
-        if objects[PLAYER].alive && player_action != PlayerAction::DidntTakeTurn {
+        if objects[PLAYER].alive && player_action != enums::PlayerAction::DidntTakeTurn {
             for id in 0..objects.len() {
                 if objects[id].ai.is_some() {
                     ai_take_turn(id, &map, &mut objects, &mut tcod.fov, &mut messages)
