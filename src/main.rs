@@ -1,7 +1,6 @@
 extern crate tcod;
 extern crate rand;
 extern crate bresenham;
-extern crate noise;
 
 use std::cmp;
 use std::env;
@@ -12,7 +11,6 @@ use tcod::map::{Map as FovMap, FovAlgorithm};
 use rand::Rng;
 use tcod::input::{self, Event, Mouse};
 use bresenham::Bresenham;
-use noise::{NoiseModule, Perlin};
 
 mod enums;
 
@@ -206,6 +204,26 @@ impl Item {
             range: range
         }
     }
+
+    pub fn heal_potion() -> Self {
+        Item::new(enums::ItemType::Heal, 5, 0)
+    }
+
+    pub fn fire_ball() -> Self {
+        Item::new(enums::ItemType::FireBolt, 20, 5)
+    }
+
+    pub fn confusion_spell() -> Self {
+        Item::new(enums::ItemType::Confuse, 0, 5)
+    }
+
+    pub fn fear_spell() -> Self {
+       Item::new(enums::ItemType::Scare, 0, 5)
+    }
+
+    pub fn merge_spell() -> Self {
+       Item::new(enums::ItemType::Merge, 0, 5)
+    }
     
 }
 
@@ -227,6 +245,44 @@ impl Object {
         }
     }
 
+    pub fn heal_potion(x: i32, y: i32) -> Self {
+         let mut object = Object::new(x, y, '!', "Pocao de cura".to_string(), colors::Color {
+            r: 142,
+            g: 68,
+            b: 173
+        }, false);
+        object.item = Some(Item::heal_potion());
+        object
+    }
+
+    pub fn fire_ball(x: i32, y: i32) -> Self {
+        let mut object = Object::new(x, y, 'º', "Bola de Fogo".to_string(), colors::LIGHT_RED, false);
+        object.item = Some(Item::fire_ball());
+        object
+    }
+
+    pub fn confusion_spell(x: i32, y: i32) -> Self {
+        let mut object = Object::new(x, y, '$', "Feitico de confusao".to_string(), colors::Color {
+            r: 211,
+            g: 84,
+            b: 0
+        }, false);
+        object.item = Some(Item::confusion_spell());
+        object
+    }
+
+    pub fn fear_spell(x: i32, y: i32) -> Self {
+        let mut object = Object::new(x, y, '*', "Feitico de medo".to_string(), colors::BLACK, false);
+        object.item = Some(Item::fear_spell());
+        object
+    }
+
+    pub fn merge_spell(x: i32, y: i32) -> Self {
+        let mut object = Object::new(x, y, 'M', "Feitico de fusao".into(), colors::ORANGE, false);
+        object.item = Some(Item::merge_spell());
+        object
+    }
+     
     /// set the color and then draw the character that represents this object at its position
     pub fn draw(&self, con: &mut dyn Console) {
         con.set_default_foreground(self.color);
@@ -257,6 +313,15 @@ impl Object {
             fighter.hp += amount;
             if fighter.hp > fighter.max_hp {
                 fighter.hp = fighter.max_hp;
+            }
+        }
+    }
+
+    pub fn take_mana(&mut self, amount: i32) {
+        if let Some(fighter) = self.fighter.as_mut() {
+            fighter.mana -= amount;
+            if fighter.mana < 1 {
+                fighter.mana = 0;
             }
         }
     }
@@ -296,11 +361,11 @@ impl Object {
         let defense = ( ((self.fighter.map_or(0, |f| f.defense) + target.fighter.map_or(0, |f| f.defense)) as f32) * 0.75) as i32;
         let power = (((self.fighter.map_or(0, |f| f.power) + target.fighter.map_or(0, |f| f.power)) as f32) * 0.75)  as i32;
         let max_hp = (((self.fighter.map_or(0, |f| f.max_hp) + target.fighter.map_or(0, |f| f.max_hp)) as f32) * 0.75)  as i32; 
-        let hp = (((self.fighter.map_or(0, |f| f.hp) + target.fighter.map_or(0, |f| f.hp)) as f32) * 0.75) as i32;
+        let hp = self.fighter.map_or(0, |f| f.hp) + target.fighter.map_or(0, |f| f.hp);
 
         let c = self.char;
         let color = target.color;
-        let name = self.name.clone() + " "  + &target.name;
+        let name = format!("{} {}", self.name, target.name);
 
         let mut object = Object::new(self.x, self.y, c, name, color, self.blocks);
         object.fighter = Some(Fighter {
@@ -319,6 +384,28 @@ impl Object {
         object
     }
 
+}
+
+// UTILS
+fn fade(t: f64) -> f64 {
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
+fn simplex(x: f64, y: f64, z:f64) -> f64 {
+    // let X = round::floor(x) & 255;
+    // let Y = round::floor(y) & 255;
+    // let Z = round::floor(z) & 255;
+
+    // let x1 = x - round::floor(x);
+    // let y1 = y - round::floor(y);
+    // let z1 = z - round::floor(z);
+
+    // let u = fade(x1);
+    // let v = fade(y1);
+    // let w = fade(z1);
+
+    //.concat([0..256]).shuffle();
+    0.0
 }
 
 // FUNTIONS
@@ -521,30 +608,30 @@ fn create_d_tunnel(y1: i32, y2: i32, x1: i32, x2: i32, map: &mut Map) {
 
 fn make_perlin_map(objects: &mut Vec<Object>) -> (Map) {
     let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
-    let noise = Perlin::new();
+    // let noise = Perlin::new();
 
-    for i in 0..(MAP_HEIGHT) {
-        for j in 0..(MAP_WIDTH)  {
-            let x = (j as f64) / MAP_WIDTH as f64;
-            let y = (i as f64) / MAP_HEIGHT as f64;
+    // for i in 0..(MAP_HEIGHT) {
+    //     for j in 0..(MAP_WIDTH)  {
+    //         let x = (j as f64) / MAP_WIDTH as f64;
+    //         let y = (i as f64) / MAP_HEIGHT as f64;
 
-            let n = (noise.get([x, y, 0.0]) + 1.0) / 2.0;
+    //         let n = (noise.get([x, y, 0.0]) + 1.0) / 2.0;
 
-            //println!("{}", n);
-            if n < 0.35 {
-                map[j as usize][i as usize] = Tile::water()
-            }
-            else if n < 0.6 {
-                map[j as usize][i as usize]  = Tile::floor('.')
-            }
-            else if n < 0.8 {
-                map[j as usize][i as usize] = Tile::floor('-')
-            }
-            else {
-                map[j as usize][i as usize]  = Tile::wall()
-            }
-        }
-    }
+    //         //println!("{}", n);
+    //         if n < 0.35 {
+    //             map[j as usize][i as usize] = Tile::water()
+    //         }
+    //         else if n < 0.6 {
+    //             map[j as usize][i as usize]  = Tile::floor('.')
+    //         }
+    //         else if n < 0.8 {
+    //             map[j as usize][i as usize] = Tile::floor('-')
+    //         }
+    //         else {
+    //             map[j as usize][i as usize]  = Tile::wall()
+    //         }
+    //     }
+    // }
     map
 }
 
@@ -577,9 +664,6 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
             // "paint" it to the map's tiles
             create_room(new_room, objects, &mut map, std::char::from_u32(i as u32).unwrap());
 
-           
-            
-
             // center coordinates of the new room, will be useful later
             let (new_x, new_y) = new_room.center();
 
@@ -605,13 +689,15 @@ fn make_map(objects: &mut Vec<Object>) -> (Map) {
                
             }
 
-            if rand::random::<bool>() {
-                create_water(new_room, &mut map);
-            }
-
             // finally, append the new room to the list
             rooms.push(new_room);
             //rand::thread_rng().shuffle(&mut rooms);
+        }
+    }
+
+    for room in rooms.clone() {
+        if rand::random::<bool>() {
+            create_water(room, &mut map);
         }
     }
 
@@ -821,7 +907,7 @@ fn handle_keys(key: tcod::input::Key, map: &mut Map, objects: &mut Vec<Object>, 
             if let Some(index) = index {
                 use_item(index, inventory, objects, messages, tcod);
             }
-            (TookTurn, None)
+            (DidntTakeTurn, None)
         },
         (Key {printable: '+', ..}, true) => {
             objects[PLAYER].torch_radius += 1;
@@ -952,42 +1038,18 @@ fn place_objects(room: Rect, objects: &mut Vec<Object>, map: &Map) {
             
             is_blocked(x, y, map, objects)
         } {}
-       
-        let dice = rand::random::<f32>();
-        let item = if dice < 0.4 {
-            let mut object = Object::new(x, y, '!', "Pocao de cura".to_string(), colors::Color {
-                r: 142,
-                g: 68,
-                b: 173
-            }, false);
-            object.item = Some(Item::new(enums::ItemType::Heal, 5, 0));
-            object
-        } else if dice < 0.66 {
-            let mut object = Object::new(x, y, 'º', "Bola de Fogo".to_string(), colors::LIGHT_RED, false);
-            object.item = Some(Item::new(enums::ItemType::FireBolt, 20, 5));
-            object
-        } else if dice < 0.8 {
-            if rand::random() {
-                let mut object = Object::new(x, y, '$', "Feitico de confusao".to_string(), colors::Color {
-                    r: 211,
-                    g: 84,
-                    b: 0
-                }, false);
-                object.item = Some(Item::new(enums::ItemType::Confuse, 0, 5));
-                object
-            }
-            else {
-                let mut object = Object::new(x, y, '*', "Feitico de medo".to_string(), colors::BLACK, false);
-                object.item = Some(Item::new(enums::ItemType::Scare, 0, 5));
-                object
-            }
-            
-        } else {
-            let mut object = Object::new(x, y, 'M', "Feitico de fusao".into(), colors::ORANGE, false);
-            object.item = Some(Item::new(enums::ItemType::Merge, 0, 5));
-            object
+        let mut rng = rand::thread_rng();
+
+        let dice = rng.gen_range(0, 5);
+        let item = match dice {
+            0 => Object::heal_potion(x, y),
+            1 => Object::fire_ball(x, y),
+            2 => Object::confusion_spell(x, y),
+            3 => Object::fear_spell(x, y),
+            4 => Object::merge_spell(x, y),
+            _ => panic!("Sorteio de itens fora de range")
         };
-        
+                
         objects.push(item);
 
     }
@@ -1104,6 +1166,7 @@ fn inventory_menu(inventory: &Vec<Object>, header: &str, root: &mut Root) -> Opt
     } else {
         inventory.iter().map(|item| { item.name.clone() }).collect()
     };
+
 
     let inventory_index = menu(header, &options, INVENTORY_WIDTH, root);
 
@@ -1258,6 +1321,13 @@ fn cast_heal(_inventory_id: usize, objects: &mut [Object], messages: &mut Messag
             message(messages, "Voce ja tem a vida cheia.", colors::RED);
             return enums::UseResult::Cancelled;
         }
+        let mut rng = rand::thread_rng();
+        let dice = rng.gen_range(0, 3);
+        if dice > 0 {
+            message(messages, format!("A cura lhe custou {} de mana.", dice) , colors::RED);
+            objects[PLAYER].take_mana(dice);
+        }
+
         message(messages, "Voce se sente melhor!", colors::LIGHT_VIOLET);
         objects[PLAYER].heal(item.amount as i32);
         return enums::UseResult::UsedUp;
@@ -1299,12 +1369,14 @@ fn main() {
 
     // return;
 
-    let root = Root::initializer()
+    let mut root = Root::initializer()
         .font("bluebox.png", FontLayout::AsciiInRow)
         .font_type(FontType::Greyscale)
         .size(SCREEN_WIDTH, SCREEN_HEIGHT)
         .title("Rogue")
         .init();
+
+    //root.set_fullscreen(true);
 
     tcod::system::set_fps(LIMIT_FPS); 
 
@@ -1376,9 +1448,6 @@ fn main() {
                 Default::default()
             },
         };
-
-
-       
 
         for object in &objects {
             object.clear(&mut tcod.con)

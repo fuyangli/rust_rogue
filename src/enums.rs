@@ -8,6 +8,14 @@ pub enum ItemType {
     Merge
 }
 
+// pub enum Item {
+//     HealPotion,
+//     FireBall,
+//     ConfusionSpell,
+//     ScareSpell,
+//     MergeSpell
+// }
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum UseResult {
     UsedUp,
