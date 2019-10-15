@@ -361,11 +361,11 @@ impl Object {
         let defense = ( ((self.fighter.map_or(0, |f| f.defense) + target.fighter.map_or(0, |f| f.defense)) as f32) * 0.75) as i32;
         let power = (((self.fighter.map_or(0, |f| f.power) + target.fighter.map_or(0, |f| f.power)) as f32) * 0.75)  as i32;
         let max_hp = (((self.fighter.map_or(0, |f| f.max_hp) + target.fighter.map_or(0, |f| f.max_hp)) as f32) * 0.75)  as i32; 
-        let hp = self.fighter.map_or(0, |f| f.hp) + target.fighter.map_or(0, |f| f.hp);
+        let hp = std::cmp::min(self.fighter.map_or(0, |f| f.hp) + target.fighter.map_or(0, |f| f.hp), max_hp);
 
         let c = self.char;
         let color = target.color;
-        let name = format!("{} {}", self.name, target.name);
+        let name = format!("{} {}", self.name, "");
 
         let mut object = Object::new(self.x, self.y, c, name, color, self.blocks);
         object.fighter = Some(Fighter {
